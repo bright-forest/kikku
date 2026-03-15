@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kikku"
+version = "0.1.0"
+description = "Lightweight stage-composition and period-graph tools for dolo-plus models"
+requires-python = ">=3.11"
+dependencies = [
+    "networkx",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+viz = ["matplotlib"]
+
+[tool.setuptools.packages.find]
+where = ["."]

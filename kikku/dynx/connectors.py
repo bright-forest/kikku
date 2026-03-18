@@ -1,4 +1,4 @@
-"""Inter-period connector (twister) loading from nest.yaml."""
+"""Inter-period connector loading from nest.yaml."""
 
 from __future__ import annotations
 

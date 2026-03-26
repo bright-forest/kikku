@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import gc
 import pickle
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,7 +11,6 @@ from typing import Any, Callable
 
 import numpy as np
 import yaml
-from scipy.optimize import differential_evolution
 
 from kikku.run.mpi import bcast_item, is_root, mpi_map
 
@@ -162,73 +162,12 @@ def estimate(
     comm: Any = None,
     verbose: bool = True,
 ) -> EstimationResult:
-    """Minimize criterion via cross-entropy or scipy differential evolution."""
+    """Minimize criterion via cross-entropy method."""
     opts = dict(method_options or {})
     if method in ("cross-entropy", "ce", "cross_entropy"):
         return _cross_entropy_minimize(criterion, param_spec, opts, comm, verbose)
-    if method in ("scipy-de", "differential_evolution", "de"):
-        return _scipy_de_minimize(criterion, param_spec, opts, verbose)
+    # TODO: add alternative methods when needed
     raise ValueError(f"unknown method: {method!r}")
-
-
-def _scipy_de_minimize(
-    criterion: Callable[[dict[str, float]], float],
-    param_spec: dict[str, Any],
-    options: dict[str, Any],
-    verbose: bool,
-) -> EstimationResult:
-    names = sorted(param_spec.keys())
-    bounds = [tuple(param_spec[n]["bounds"]) for n in names]
-
-    def obj(x):
-        theta = {names[i]: float(x[i]) for i in range(len(names))}
-        try:
-            return criterion(theta)
-        except Exception:
-            return BIG_LOSS
-
-    seed = int(options.get("seed", 0))
-    rng = np.random.default_rng(seed)
-    de_kw = {
-        k: v
-        for k, v in options.items()
-        if k
-        not in (
-            "seed",
-            "n_samples",
-            "n_elite",
-            "checkpoint_dir",
-            "max_iter",
-            "tol",
-        )
-    }
-    if "maxiter" not in de_kw and "max_iter" in options:
-        de_kw["maxiter"] = int(options["max_iter"])
-    res = differential_evolution(
-        obj,
-        bounds,
-        seed=int(rng.integers(0, 2**31 - 1)),
-        polish=True,
-        **de_kw,
-    )
-    theta = {names[i]: float(res.x[i]) for i in range(len(names))}
-    objective = float(res.fun)
-    sim_moments = {}
-    try:
-        criterion(theta)
-        sim_moments = dict(getattr(criterion, "last_sim_moments", None) or {})
-    except Exception:
-        pass
-    if verbose:
-        print(f"[scipy-de] success={res.success} nit={res.nit} fun={res.fun}")
-    return EstimationResult(
-        theta=theta,
-        objective=objective,
-        converged=bool(res.success),
-        n_iter=int(res.nit),
-        history=[{"message": res.message, "nit": res.nit, "fun": res.fun}],
-        sim_moments=sim_moments,
-    )
 
 
 def _safe_criterion(criterion: Callable[[dict[str, float]], float], theta: dict[str, float]) -> float:
@@ -374,7 +313,7 @@ def _cross_entropy_minimize(
         candidates = bcast_item(candidates, comm, root=0)
         assert candidates is not None
 
-        losses = mpi_map(lambda th: _safe_criterion(criterion, th), candidates, comm=comm, root=0)
+        losses = mpi_map(lambda th: _safe_criterion(criterion, th), candidates, comm=comm)
 
         if is_root(comm):
             assert losses is not None
@@ -425,6 +364,9 @@ def _cross_entropy_minimize(
 
         if converged:
             break
+
+        # Free any solution arrays lingering from this iteration's evals
+        gc.collect()
 
     sim_moments: dict[str, float] = {}
     if is_root(comm):

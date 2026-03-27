@@ -117,7 +117,15 @@ def make_criterion(
     """
     keys = sorted(data_moments.keys())
     data_vec = np.array([float(data_moments[k]) for k in keys], dtype=float)
-    w_arr = None if weights is None else np.asarray(weights, dtype=float)
+    if weights is not None:
+        w_arr = np.asarray(weights, dtype=float)
+    else:
+        # Default: relative deviations. Weight = 1/data² so the loss is
+        # sum((sim-data)²/data²) = sum of squared percentage deviations.
+        # For moments with |data| < 1 (correlations, fractions), use absolute
+        # deviations (weight=1) to avoid amplifying noise.
+        denom = np.where(np.abs(data_vec) >= 1.0, data_vec ** 2, 1.0)
+        w_arr = 1.0 / np.maximum(denom, 1e-20)
 
     def criterion(theta: dict[str, float]) -> float:
         try:

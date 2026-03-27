@@ -115,7 +115,10 @@ def make_criterion(
     On exception, returns BIG_LOSS. Sets ``criterion.last_sim_moments`` after each
     successful eval for downstream diagnostics.
     """
-    keys = sorted(data_moments.keys())
+    # Filter out NaN data moments — they contribute nothing to the loss and
+    # propagate NaN through weights and diff, making every loss NaN.
+    all_keys = sorted(data_moments.keys())
+    keys = [k for k in all_keys if not _is_nan_float(data_moments[k])]
     data_vec = np.array([float(data_moments[k]) for k in keys], dtype=float)
     if weights is not None:
         w_arr = np.asarray(weights, dtype=float)

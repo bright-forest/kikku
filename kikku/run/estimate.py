@@ -134,6 +134,7 @@ def make_criterion(
         try:
             panels = trial_fn(theta)
             sim_dict = moment_fn(panels)
+            del panels  # free simulation arrays eagerly
         except Exception:
             criterion.last_sim_moments = None
             return BIG_LOSS

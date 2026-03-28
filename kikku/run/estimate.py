@@ -312,6 +312,7 @@ def _cross_entropy_minimize(
     best_loss = BIG_LOSS
     converged = False
     elite_mean_loss_prev: float | None = None
+    rss_post_gc_prev = 0
 
     for it in range(max_iter):
         # Iteration 0: uniform over bounds (Eggsandbaskets/fempres pattern)
@@ -373,14 +374,16 @@ def _cross_entropy_minimize(
 
             if verbose:
                 theta_str = '  '.join(f'{n}={best_theta[n]:.4f}' for n in names)
-                try:
-                    import resource
-                    rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-                    rss_str = f'  RSS={rss_mb:.0f}MB'
-                except Exception:
-                    rss_str = ''
                 print(f"[ce] iter={it + 1}/{max_iter} best_loss={best_loss:.6f} "
-                      f"elite_mean={elite_mean_loss:.6f}{rss_str}  {theta_str}")
+                      f"elite_mean={elite_mean_loss:.6f}  {theta_str}")
+
+        # --- Memory diagnostics (rank 0, every iteration) ---
+        if is_root(comm) and verbose:
+            try:
+                import resource
+                rss_post_eval = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024
+            except Exception:
+                rss_post_eval = 0
 
         converged = bcast_item(converged if is_root(comm) else None, comm, root=0)
         means = bcast_item(means if is_root(comm) else None, comm, root=0)
@@ -389,19 +392,34 @@ def _cross_entropy_minimize(
         best_loss = bcast_item(best_loss if is_root(comm) else None, comm, root=0)
         history = bcast_item(history if is_root(comm) else None, comm, root=0)
 
+        if is_root(comm) and verbose:
+            try:
+                rss_post_bcast = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024
+            except Exception:
+                rss_post_bcast = 0
+
         if converged:
             break
 
         # Free any solution arrays lingering from this iteration's evals
         gc.collect()
-        # On Linux, force glibc to return freed pages to the OS.
-        # Without this, malloc fragmentation causes RSS to grow ~50 MB/iter
-        # even though live memory is constant, eventually OOMing large jobs.
         try:
             import ctypes
             ctypes.CDLL(None).malloc_trim(0)
         except (OSError, AttributeError):
-            pass  # not Linux or no malloc_trim
+            pass
+
+        if is_root(comm) and verbose:
+            try:
+                rss_post_gc = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024
+                print(f"  [mem] iter={it+1} eval={rss_post_eval}MB "
+                      f"bcast={rss_post_bcast}MB gc={rss_post_gc}MB "
+                      f"delta_eval={rss_post_eval - (rss_post_gc_prev if it > 0 else rss_post_eval)}MB "
+                      f"delta_bcast={rss_post_bcast - rss_post_eval}MB "
+                      f"delta_gc={rss_post_gc - rss_post_bcast}MB")
+                rss_post_gc_prev = rss_post_gc
+            except Exception:
+                pass
 
     # Use last_sim_moments from the CE loop if available, avoiding a
     # costly re-evaluation that can OOM on large grids.

@@ -373,8 +373,14 @@ def _cross_entropy_minimize(
 
             if verbose:
                 theta_str = '  '.join(f'{n}={best_theta[n]:.4f}' for n in names)
+                try:
+                    import resource
+                    rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+                    rss_str = f'  RSS={rss_mb:.0f}MB'
+                except Exception:
+                    rss_str = ''
                 print(f"[ce] iter={it + 1}/{max_iter} best_loss={best_loss:.6f} "
-                      f"elite_mean={elite_mean_loss:.6f}  {theta_str}")
+                      f"elite_mean={elite_mean_loss:.6f}{rss_str}  {theta_str}")
 
         converged = bcast_item(converged if is_root(comm) else None, comm, root=0)
         means = bcast_item(means if is_root(comm) else None, comm, root=0)

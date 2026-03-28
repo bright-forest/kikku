@@ -380,13 +380,19 @@ def _cross_entropy_minimize(
         # Free any solution arrays lingering from this iteration's evals
         gc.collect()
 
+    # Use last_sim_moments from the CE loop if available, avoiding a
+    # costly re-evaluation that can OOM on large grids.
     sim_moments: dict[str, float] = {}
     if is_root(comm):
-        try:
-            _safe_criterion(criterion, best_theta)
-            sim_moments = dict(getattr(criterion, "last_sim_moments", None) or {})
-        except Exception:
-            sim_moments = {}
+        cached = getattr(criterion, "last_sim_moments", None)
+        if cached:
+            sim_moments = dict(cached)
+        else:
+            try:
+                _safe_criterion(criterion, best_theta)
+                sim_moments = dict(getattr(criterion, "last_sim_moments", None) or {})
+            except Exception:
+                sim_moments = {}
     sim_moments = bcast_item(sim_moments if is_root(comm) else None, comm, root=0)
 
     return EstimationResult(

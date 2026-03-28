@@ -182,11 +182,13 @@ def estimate(
     method_options: dict[str, Any] | None = None,
     comm: Any = None,
     verbose: bool = True,
+    resume_state: dict[str, Any] | None = None,
 ) -> EstimationResult:
     """Minimize criterion via cross-entropy method."""
     opts = dict(method_options or {})
     if method in ("cross-entropy", "ce", "cross_entropy"):
-        return _cross_entropy_minimize(criterion, param_spec, opts, comm, verbose)
+        return _cross_entropy_minimize(criterion, param_spec, opts, comm, verbose,
+                                       resume_state=resume_state)
     # TODO: add alternative methods when needed
     raise ValueError(f"unknown method: {method!r}")
 
@@ -299,6 +301,7 @@ def _cross_entropy_minimize(
     options: dict[str, Any],
     comm: Any,
     verbose: bool,
+    resume_state: dict[str, Any] | None = None,
 ) -> EstimationResult:
     names = sorted(param_spec.keys())
     n_samples = int(options.get("n_samples", 48))
@@ -313,25 +316,45 @@ def _cross_entropy_minimize(
     simulation_seed = int(options.get("simulation_seed", 99))
     noise_fraction = float(options.get("noise_fraction", 0.0))
     checkpoint_dir = options.get("checkpoint_dir")
+    max_iter_this_run = int(options.get("max_iter_this_run", max_iter))
 
     n_elite = max(1, min(n_elite, n_samples))
 
-    # Initialise: no means/cov yet — iteration 0 draws uniform
-    means: dict[str, float] | None = None
-    cov: np.ndarray | None = None
-
     rng = np.random.default_rng(sampling_seed)
-    history: list[dict[str, Any]] = []
-    best_theta: dict[str, float] = {
-        n: 0.5 * (float(param_spec[n]["bounds"][0]) + float(param_spec[n]["bounds"][1]))
-        for n in names
-    }
-    best_loss = BIG_LOSS
+
+    if resume_state is not None:
+        means = resume_state["means"]
+        cov = np.asarray(resume_state["cov"])
+        best_theta = dict(resume_state["best_theta"])
+        best_loss = float(resume_state["best_loss"])
+        start_iter = int(resume_state["it"]) + 1
+        history = list(resume_state.get("history", []))
+        elite_mean_loss_prev = resume_state.get("elite_mean_loss_prev")
+        rng_state = resume_state.get("rng_state")
+        if rng_state is not None:
+            rng.bit_generator.state = rng_state
+        if is_root(comm) and verbose:
+            print(f"[ce] Resuming from iter {start_iter}, "
+                  f"best_loss={best_loss:.6f}")
+    else:
+        means = None
+        cov = None
+        best_theta = {
+            n: 0.5 * (float(param_spec[n]["bounds"][0]) + float(param_spec[n]["bounds"][1]))
+            for n in names
+        }
+        best_loss = BIG_LOSS
+        start_iter = 0
+        history = []
+        elite_mean_loss_prev = None
+
+    # Broadcast start_iter so all ranks agree on the loop range
+    start_iter = bcast_item(start_iter if is_root(comm) else None, comm, root=0)
+
     converged = False
-    elite_mean_loss_prev: float | None = None
     rss_post_gc_prev = 0
 
-    for it in range(max_iter):
+    for it in range(start_iter, max_iter):
         # Iteration 0: uniform over bounds (Eggsandbaskets/fempres pattern)
         # Iteration 1+: truncated MVN from elite distribution, with
         # noise_fraction of draws replaced by uniform samples to maintain
@@ -380,9 +403,17 @@ def _cross_entropy_minimize(
             if checkpoint_dir:
                 cdir = Path(checkpoint_dir)
                 cdir.mkdir(parents=True, exist_ok=True)
-                state = {"means": means, "cov": cov, "best_theta": best_theta, "best_loss": best_loss, "it": it}
-                with (cdir / "state.pkl").open("wb") as f:
+                state = {
+                    "means": means, "cov": cov,
+                    "best_theta": best_theta, "best_loss": best_loss,
+                    "it": it, "history": history,
+                    "elite_mean_loss_prev": elite_mean_loss_prev,
+                    "rng_state": rng.bit_generator.state,
+                }
+                tmp_path = cdir / "state.pkl.tmp"
+                with tmp_path.open("wb") as f:
                     pickle.dump(state, f)
+                tmp_path.rename(cdir / "state.pkl")  # atomic on same filesystem
 
             if elite_mean_loss_prev is not None:
                 if abs(elite_mean_loss_prev - elite_mean_loss) < tol:
@@ -416,6 +447,14 @@ def _cross_entropy_minimize(
                 rss_post_bcast = 0
 
         if converged:
+            break
+
+        # Check restart budget
+        iters_done_this_run = it - start_iter + 1
+        if iters_done_this_run >= max_iter_this_run:
+            if is_root(comm) and verbose:
+                print(f"[ce] Restart budget exhausted ({iters_done_this_run} iters). "
+                      f"Checkpoint saved at iter {it + 1}.")
             break
 
         # Free any solution arrays lingering from this iteration's evals

@@ -182,10 +182,18 @@ def estimate(
     raise ValueError(f"unknown method: {method!r}")
 
 
+_SAFE_CRITERION_LOG_COUNT = 0
+
 def _safe_criterion(criterion: Callable[[dict[str, float]], float], theta: dict[str, float]) -> float:
+    global _SAFE_CRITERION_LOG_COUNT
     try:
         return float(criterion(theta))
-    except Exception:
+    except Exception as _exc:
+        if _SAFE_CRITERION_LOG_COUNT < 3:
+            import traceback, sys
+            print(f"[criterion EXCEPTION] {type(_exc).__name__}: {_exc}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            _SAFE_CRITERION_LOG_COUNT += 1
         return BIG_LOSS
 
 

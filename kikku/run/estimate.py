@@ -379,6 +379,14 @@ def _cross_entropy_minimize(
 
         # Free any solution arrays lingering from this iteration's evals
         gc.collect()
+        # On Linux, force glibc to return freed pages to the OS.
+        # Without this, malloc fragmentation causes RSS to grow ~50 MB/iter
+        # even though live memory is constant, eventually OOMing large jobs.
+        try:
+            import ctypes
+            ctypes.CDLL(None).malloc_trim(0)
+        except (OSError, AttributeError):
+            pass  # not Linux or no malloc_trim
 
     # Use last_sim_moments from the CE loop if available, avoiding a
     # costly re-evaluation that can OOM on large grids.

@@ -135,7 +135,16 @@ def make_criterion(
             panels = trial_fn(theta)
             sim_dict = moment_fn(panels)
             del panels  # free simulation arrays eagerly
-        except Exception:
+        except Exception as _exc:
+            if not hasattr(criterion, '_err_count'):
+                criterion._err_count = 0
+            if criterion._err_count < 3:
+                import traceback, sys
+                print(f"[criterion EXCEPTION] {type(_exc).__name__}: {_exc}",
+                      file=sys.stderr, flush=True)
+                traceback.print_exc(file=sys.stderr)
+                sys.stderr.flush()
+                criterion._err_count += 1
             criterion.last_sim_moments = None
             return BIG_LOSS
         sim_vec = np.array(

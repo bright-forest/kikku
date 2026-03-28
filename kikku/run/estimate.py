@@ -365,7 +365,9 @@ def _cross_entropy_minimize(
             elite_mean_loss_prev = elite_mean_loss
 
             if verbose:
-                print(f"[ce] iter={it + 1}/{max_iter} best_loss={best_loss:.6f} elite_mean={elite_mean_loss:.6f}")
+                theta_str = '  '.join(f'{n}={best_theta[n]:.4f}' for n in names)
+                print(f"[ce] iter={it + 1}/{max_iter} best_loss={best_loss:.6f} "
+                      f"elite_mean={elite_mean_loss:.6f}  {theta_str}")
 
         converged = bcast_item(converged if is_root(comm) else None, comm, root=0)
         means = bcast_item(means if is_root(comm) else None, comm, root=0)

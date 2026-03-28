@@ -407,7 +407,7 @@ def _cross_entropy_minimize(
                     "means": means, "cov": cov,
                     "best_theta": best_theta, "best_loss": best_loss,
                     "it": it, "history": history,
-                    "elite_mean_loss_prev": elite_mean_loss_prev,
+                    "elite_mean_loss_prev": elite_mean_loss,
                     "rng_state": rng.bit_generator.state,
                 }
                 tmp_path = cdir / "state.pkl.tmp"

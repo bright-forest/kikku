@@ -315,6 +315,7 @@ def _cross_entropy_minimize(
     sampling_seed = int(options.get("sampling_seed", options.get("seed", 0)))
     simulation_seed = int(options.get("simulation_seed", 99))
     noise_fraction = float(options.get("noise_fraction", 0.0))
+    alpha_smooth = float(options.get("alpha_smooth", 1.0))  # 1.0 = no smoothing
     checkpoint_dir = options.get("checkpoint_dir")
     max_iter_this_run = int(options.get("max_iter_this_run", max_iter))
 
@@ -387,7 +388,14 @@ def _cross_entropy_minimize(
                     best_loss = ell
                     best_theta = dict(th)
 
-            mean_vec, cov = _elite_weighted_mean_cov(elite_thetas, elite_losses, names)
+            new_mean_vec, new_cov = _elite_weighted_mean_cov(elite_thetas, elite_losses, names)
+            if means is not None and alpha_smooth < 1.0:
+                old_mean_vec = np.array([float(means[n]) for n in names], dtype=float)
+                mean_vec = alpha_smooth * new_mean_vec + (1.0 - alpha_smooth) * old_mean_vec
+                cov = alpha_smooth * new_cov + (1.0 - alpha_smooth) * cov
+            else:
+                mean_vec = new_mean_vec
+                cov = new_cov
             means = _dict_from_vector(mean_vec, names)
 
             elite_mean_loss = float(np.mean(elite_losses))

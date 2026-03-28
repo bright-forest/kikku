@@ -294,6 +294,7 @@ def _cross_entropy_minimize(
     # Falls back to legacy 'seed' key for backward compat.
     sampling_seed = int(options.get("sampling_seed", options.get("seed", 0)))
     simulation_seed = int(options.get("simulation_seed", 99))
+    noise_fraction = float(options.get("noise_fraction", 0.0))
     checkpoint_dir = options.get("checkpoint_dir")
 
     n_elite = max(1, min(n_elite, n_samples))
@@ -314,12 +315,18 @@ def _cross_entropy_minimize(
 
     for it in range(max_iter):
         # Iteration 0: uniform over bounds (Eggsandbaskets/fempres pattern)
-        # Iteration 1+: truncated MVN from elite distribution
+        # Iteration 1+: truncated MVN from elite distribution, with
+        # noise_fraction of draws replaced by uniform samples to maintain
+        # exploration and prevent premature collapse.
         if is_root(comm):
             if it == 0 or means is None:
                 candidates = _sample_uniform(param_spec, n_samples, rng)
             else:
-                candidates = _sample_bounded(means, cov, param_spec, n_samples, rng)
+                n_noise = max(0, int(round(noise_fraction * n_samples)))
+                n_elite_draws = n_samples - n_noise
+                candidates = _sample_bounded(means, cov, param_spec, n_elite_draws, rng)
+                if n_noise > 0:
+                    candidates.extend(_sample_uniform(param_spec, n_noise, rng))
         else:
             candidates = None
         candidates = bcast_item(candidates, comm, root=0)

@@ -404,22 +404,43 @@ def make_run_dir(base_dir, tag=None):
     Every run gets the next number. ``tag`` is ignored (kept for
     backward compat but has no effect).
 
+    MPI-safe: if mpi4py is available and size > 1, rank 0 creates
+    the directory and broadcasts the path to all ranks so every
+    process uses the same folder.
+
     Example::
 
         results/durables/2026-03-25/001/
         results/durables/2026-03-25/002/
     """
-    base = Path(base_dir)
-    today = date.today().isoformat()
-    day_dir = base / today
-    n = 1
-    while True:
-        run_dir = day_dir / f'{n:03d}'
-        if not run_dir.exists():
-            break
-        n += 1
-    run_dir.mkdir(parents=True, exist_ok=True)
-    return str(run_dir)
+    # Detect MPI
+    comm, rank = None, 0
+    try:
+        from mpi4py import MPI
+        comm = MPI.COMM_WORLD
+        rank = comm.Get_rank()
+    except ImportError:
+        pass
+
+    run_dir_str = None
+    if rank == 0:
+        base = Path(base_dir)
+        today = date.today().isoformat()
+        day_dir = base / today
+        n = 1
+        while True:
+            run_dir = day_dir / f'{n:03d}'
+            if not run_dir.exists():
+                break
+            n += 1
+        run_dir.mkdir(parents=True, exist_ok=True)
+        run_dir_str = str(run_dir)
+
+    # Broadcast to all ranks
+    if comm is not None and comm.Get_size() > 1:
+        run_dir_str = comm.bcast(run_dir_str, root=0)
+
+    return run_dir_str
 
 
 # ---------------------------------------------------------------------------

@@ -81,8 +81,6 @@ The override keys (`n_a`) identify the configuration. The metric keys (`solve_ms
 
 This flat structure feeds directly into `format_table` and `write_table`.
 
-The result object returned by `solve_fn` is **not retained** — it is discarded after `metric_fns` extract their scalars. If you need to keep the full solved model (policies, value functions, simulation panels), save it to disk inside `solve_fn` or capture it in a closure-scoped container.
-
 ---
 
 ## Example 1: Timing sweep
@@ -194,11 +192,13 @@ results = sweep(solve_fn, grid, metric_fns, comm=comm)
 From the command line:
 
 ```bash
-mpirun -np 8 python -m examples.durables2_0.run \
+mpirun -np 8 python -m mpi4py -m examples.durables.run \
     --sweep --sweep-grids 100,200,300,500,1000
 ```
 
 When `mpi4py` is not installed or the script is not launched via `mpirun`, `get_comm()` returns `None` and the sweep runs serially. No code changes needed.
+
+**Output directories under MPI.** `make_run_dir` is MPI-safe: rank 0 creates the `YYYY-MM-DD/NNN/` directory and broadcasts the path to all ranks. Every rank uses the same folder — no racing or duplicate directories.
 
 ---
 

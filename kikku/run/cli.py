@@ -54,6 +54,7 @@ class RunSpec:
     plots: bool
 
     sweep_grids: list | None
+    sweep_params: list
     sweep_runs: int
     warmup: bool
     experiment_set: dict | None
@@ -147,6 +148,11 @@ def parse_run(
         parser.add_argument(
             '--sweep-grids', type=str, default=None,
             help='Comma-separated grid sizes for sweep',
+        )
+        parser.add_argument(
+            '--sweep-params', nargs='+', default=[],
+            help='Sweep axes: key=val1,val2,... (Cartesian product). '
+                 'Use method=FUES,NEGM to sweep methods.',
         )
         parser.add_argument('--sweep-runs', type=int, default=3)
         parser.add_argument('--warmup', '--no-warmup',
@@ -303,6 +309,7 @@ def parse_run(
         seed=getattr(args, 'seed', 42),
         plots=getattr(args, 'plots', False),
         sweep_grids=sweep_grids,
+        sweep_params=getattr(args, 'sweep_params', []),
         sweep_runs=getattr(args, 'sweep_runs', 3),
         warmup=getattr(args, 'warmup', True),
         experiment_set=experiment_set,
@@ -393,20 +400,24 @@ def parse_key_value(raw_list: list | None) -> dict:
 def make_run_dir(base_dir, tag=None):
     """Create and return a run output directory.
 
-    If *tag* is provided: ``base_dir/tag/``.
-    Otherwise: ``base_dir/YYYY-MM-DD_NNN/`` with auto-incremented NNN.
+    ``base_dir/YYYY-MM-DD/NNN/`` with auto-incremented NNN.
+    Every run gets the next number. ``tag`` is ignored (kept for
+    backward compat but has no effect).
+
+    Example::
+
+        results/durables/2026-03-25/001/
+        results/durables/2026-03-25/002/
     """
     base = Path(base_dir)
-    if tag is not None:
-        run_dir = base / tag
-    else:
-        today = date.today().isoformat()
-        n = 1
-        while True:
-            run_dir = base / f'{today}_{n:03d}'
-            if not run_dir.exists():
-                break
-            n += 1
+    today = date.today().isoformat()
+    day_dir = base / today
+    n = 1
+    while True:
+        run_dir = day_dir / f'{n:03d}'
+        if not run_dir.exists():
+            break
+        n += 1
     run_dir.mkdir(parents=True, exist_ok=True)
     return str(run_dir)
 

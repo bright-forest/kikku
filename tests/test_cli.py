@@ -54,6 +54,7 @@ def test_parse_run_defaults(monkeypatch, syntax_dir):
     assert run.verbose is False
     assert run.simulate is False
     assert run.sweep_grids is None
+    assert run.sweep_params == []
     assert run.calib['beta'] == 0.96
     assert run.settings['grid_size'] == 3000
     assert run.config == {}
@@ -150,6 +151,15 @@ def test_sweep_grids_parsing(monkeypatch, syntax_dir):
                ['--sweep', '--sweep-grids', '500,1000,2000'])
     assert run.mode == 'sweep'
     assert run.sweep_grids == [500, 1000, 2000]
+
+
+def test_sweep_params_parsing(monkeypatch, syntax_dir):
+    run = _run(
+        monkeypatch, syntax_dir,
+        ['--sweep', '--sweep-params', 'grid_size=100,200', 'beta=0.95,0.96'],
+    )
+    assert run.mode == 'sweep'
+    assert run.sweep_params == ['grid_size=100,200', 'beta=0.95,0.96']
 
 
 def test_runspec_frozen(monkeypatch, syntax_dir):

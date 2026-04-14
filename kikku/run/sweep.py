@@ -5,7 +5,6 @@ handles best-of-n timing, and optionally distributes via MPI.
 """
 
 import itertools
-import time
 import warnings
 import math
 from typing import Callable, Any

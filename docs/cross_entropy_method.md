@@ -73,7 +73,7 @@ callable `theta_dict → float` (composed by `make_criterion`).
 
 ### Step-by-step code flow
 
-#### 1. Initialisation (lines 334-362)
+#### 1. Initialisation
 
 ```python
 names = sorted(param_spec.keys())      # deterministic parameter ordering
@@ -88,7 +88,7 @@ The RNG is created once from `sampling_seed` and carries state across all
 iterations. This means the same seed always produces the same sequence of
 candidates regardless of how many iterations run.
 
-#### 2. Sampling (lines 364-374)
+#### 2. Sampling
 
 ```python
 # Rank 0 only:
@@ -101,11 +101,11 @@ else:
 candidates = bcast_item(candidates, comm, root=0)
 ```
 
-**`_sample_uniform`** (line 249): draws each parameter independently from
+**`_sample_uniform`**: draws each parameter independently from
 `Uniform(lo, hi)`. No rejection needed — all draws are in-bounds by
 construction.
 
-**`_sample_bounded`** (line 266): draws from `MVN(mean, cov)` with rejection
+**`_sample_bounded`**: draws from `MVN(mean, cov)` with rejection
 sampling. If a draw falls outside bounds, it is re-drawn (up to 1000 retries).
 If all retries fail, the draw is clipped to bounds. This handles the case
 where the MVN concentrates near a boundary.
@@ -113,7 +113,7 @@ where the MVN concentrates near a boundary.
 Both functions advance the same `rng` object, maintaining deterministic
 sequencing across iterations.
 
-#### 3. Parallel evaluation (line 377)
+#### 3. Parallel evaluation
 
 ```python
 losses = mpi_map(lambda th: _safe_criterion(criterion, th), candidates, comm=comm)
@@ -127,7 +127,7 @@ In serial mode (`comm=None`), this is a list comprehension.
 solver crashes for a particular theta, it returns `BIG_LOSS = 1e10` instead
 of killing the MPI job. This is critical for robustness on HPC.
 
-#### 4. Elite selection (lines 379-384)
+#### 4. Elite selection
 
 ```python
 paired = sorted(zip(candidates, losses), key=lambda p: p[1])
@@ -139,7 +139,7 @@ elite_losses = [float(p[1]) for p in elite_pairs]
 Sort all candidates by loss (ascending — lower is better). Take the top
 `n_elite`. This is the standard CE elite selection.
 
-#### 5. Best tracking (lines 386-389)
+#### 5. Best tracking
 
 ```python
 for th, ell in zip(elite_thetas, elite_losses):
@@ -151,14 +151,14 @@ for th, ell in zip(elite_thetas, elite_losses):
 Track the global best theta across all iterations (not just the current
 iteration's elite). This is the value returned as `result.theta`.
 
-#### 6. Distribution update (line 391)
+#### 6. Distribution update
 
 ```python
 mean_vec, cov = _elite_weighted_mean_cov(elite_thetas, elite_losses, names)
 means = _dict_from_vector(mean_vec, names)
 ```
 
-**`_elite_weighted_mean_cov`** (line 308) computes exponential weights:
+**`_elite_weighted_mean_cov`** computes exponential weights:
 
 ```python
 w_i ∝ exp(-(L_i - min(L)))
@@ -178,7 +178,7 @@ This weighting scheme follows fempres. The standard CE uses uniform weights
 over the elite set; exponential weights give more influence to better
 candidates, which can improve convergence.
 
-#### 7. Convergence check (lines 411-413)
+#### 7. Convergence check
 
 ```python
 if elite_mean_loss_prev is not None:
@@ -194,7 +194,7 @@ Note: this checks the *elite mean*, not the *best* loss. The best loss may
 still improve slightly, but if the elite mean is stable, the distribution
 has converged.
 
-#### 8. Broadcast updated state (lines 419-424)
+#### 8. Broadcast updated state
 
 ```python
 converged = bcast_item(converged, comm, root=0)
@@ -212,7 +212,7 @@ flag are broadcast to all ranks. `bcast_item` degrades to identity when
 This synchronisation point ensures all ranks have the same state before
 the next iteration's sampling step.
 
-#### 9. Final evaluation (lines 429-436)
+#### 9. Final evaluation
 
 ```python
 _safe_criterion(criterion, best_theta)
@@ -260,12 +260,12 @@ is O(n_samples × n_params) — negligible compared to the model evaluations.
 
 ## Failure handling
 
-| Failure | What happens | Code location |
-|---------|-------------|---------------|
-| Model solver crashes for one theta | `_safe_criterion` returns `BIG_LOSS = 1e10` | line 234 |
-| All retries in rejection sampling fail | Draw is clipped to bounds | line 292 |
-| Covariance becomes singular | `ε = 1e-12` regularisation added to diagonal | line 323 |
-| Elite weights sum to zero | Fall back to uniform weights | line 316 |
+| Failure | What happens | Where |
+|---------|-------------|-------|
+| Model solver crashes for one theta | `_safe_criterion` returns `BIG_LOSS = 1e10` | `_safe_criterion` |
+| All retries in rejection sampling fail | Draw is clipped to bounds | `_sample_bounded` |
+| Covariance becomes singular | `ε = 1e-12` regularisation added to diagonal | `_elite_weighted_mean_cov` |
+| Elite weights sum to zero | Fall back to uniform weights | `_elite_weighted_mean_cov` |
 | MPI rank dies | Job crashes (no rank-level fault tolerance) | — |
 
 ## Checkpointing

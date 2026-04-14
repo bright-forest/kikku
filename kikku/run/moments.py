@@ -24,6 +24,11 @@ _BINOPS = {
 _NP_ALLOWED = frozenset({"log", "maximum", "minimum", "abs"})
 
 
+# ---------------------------------------------------------------------------
+# Statistical aggregators
+# ---------------------------------------------------------------------------
+# (_mean, _sd, _corr, _autocorr, _fraction)
+
 def _mean(arr: np.ndarray) -> float:
     if np.sum(~np.isnan(arr)) < MIN_OBS:
         return float("nan")
@@ -81,6 +86,11 @@ def _age_group_masks(
     return masks
 
 
+# ---------------------------------------------------------------------------
+# Safe expression evaluator
+# ---------------------------------------------------------------------------
+# (_safe_eval_expr, _safe_eval, _names_in_expr)
+
 def _safe_eval_expr(node: ast.AST, env: dict[str, Any]) -> Any:
     if isinstance(node, ast.Expression):
         return _safe_eval_expr(node.body, env)
@@ -137,6 +147,10 @@ def _names_in_expr(expr: str) -> set[str]:
     return names
 
 
+# ---------------------------------------------------------------------------
+# Derived variables
+# ---------------------------------------------------------------------------
+
 def _add_derived_variables(
     panels: dict[str, np.ndarray],
     derived_spec: dict[str, str],
@@ -191,6 +205,10 @@ def _collect_variable_names(spec: dict) -> list[str]:
             names |= _names_in_expr(str(expr))
     return sorted(names)
 
+
+# ---------------------------------------------------------------------------
+# Core moment computation
+# ---------------------------------------------------------------------------
 
 def _make_pool_fn(
     panels: dict[str, np.ndarray],
@@ -343,6 +361,10 @@ def compute_moments_from_panels(panels: dict, spec: dict) -> dict[str, float]:
             out[k] = float(v)
     return out
 
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 def make_moment_fn(moment_spec: dict) -> Callable[[dict], dict[str, float]]:
     """Compile moment spec into panels -> dict[str, float]."""

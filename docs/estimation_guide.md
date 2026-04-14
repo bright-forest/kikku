@@ -27,7 +27,7 @@ This is the only model-specific code. It takes a dict of parameter values and re
 def trial(theta):
     """theta is {'beta': 0.95, 'alpha': 0.7, ...} -> sim_panels dict."""
     nest, grids = solve(
-        syntax_dir,
+        'examples/durables/mod/separable',
         calib_overrides=theta,
         setting_overrides={'n_a': 200, 'n_h': 200},
         verbose=False,
@@ -43,7 +43,7 @@ def trial(theta):
 - Missing data as `np.nan`
 - Discrete choices (e.g. `discrete`, `z_idx`) should be numeric (0, 1, ...), not strings
 
-For durables2_0, `simulate_lifecycle` returns exactly this format:
+For `examples.durables`, `simulate_lifecycle` returns exactly this format:
 ```python
 sim_panels = {
     'a': (70, 10000),       # financial assets
@@ -213,23 +213,23 @@ mpirun -np 48 python3 -m mpi4py estimate.py
 
 Pass `comm=get_comm()` to `estimate()`.
 
-## Complete example: durables2_0
+## Complete example: durables
 
 ```python
-from examples.durables2_0.solve import solve
-from examples.durables2_0.simulate import simulate_lifecycle
+from examples.durables.solve import solve
+from examples.durables.horses.simulate import simulate_lifecycle
 from kikku.run.moments import make_moment_fn
 from kikku.run.estimate import make_criterion, estimate, diagnostics
 from kikku.run.mpi import get_comm
 import yaml
 
-with open('examples/durables2_0/estimation/baseline.yaml') as f:
+with open('examples/durables/mod/separable/estimation/baseline.yaml') as f:
     spec = yaml.safe_load(f)
 
 moment_fn = make_moment_fn(spec['moments'])
 
 def trial(theta):
-    nest, grids = solve('examples/durables2_0/syntax',
+    nest, grids = solve('examples/durables/mod/separable',
                         calib_overrides=theta,
                         setting_overrides={'n_a': 200, 'n_h': 200, 'n_w': 200},
                         verbose=False)
@@ -276,8 +276,8 @@ identification:
 ## Utility switching
 
 ```python
-solve('examples/durables2_0/syntax', ...)       # separable CRRA
-solve('examples/durables2_0/syntax_cd', ...)     # Cobb-Douglas CRRA
+solve('examples/durables/mod/separable', ...)       # separable CRRA
+solve('examples/durables/mod/cobb_douglas', ...)    # Cobb–Douglas CRRA
 ```
 
 Same sim_panels format. Same moment function. Different callables dispatched automatically.

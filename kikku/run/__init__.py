@@ -1,16 +1,24 @@
-"""Generic runner infrastructure for DDSL model examples.
+"""Runner infrastructure for DDSL model examples.
 
-Sub-modules:
-    cli      — parse_run / RunSpec (CLI → frozen spec)
-    sweep    — parameter sweep combinator (best-of-n, optional MPI)
-    io       — solution save/load (numpy + json, legacy)
-    nest_io  — nest save/load (.nst files, dolo+ objects + solutions)
-    mpi      — MPI distribution helpers (graceful degradation)
-    metrics  — table formatting (markdown + LaTeX)
-    moments  — spec-driven moment generation (panels → dict[str, float])
-    estimate — SMM estimation (CE, criterion composition, diagnostics)
+Provides everything an example's ``main()`` needs between ``solve()``
+and disk output: CLI parsing, parameter sweeps, persistence, table
+formatting, moment computation, and SMM estimation.
 
+Modules
+-------
+cli       Parse command-line arguments into a frozen ``RunSpec``.
+sweep     Parameter-grid sweep with best-of-n timing and MPI.
+metrics   Markdown and LaTeX table formatting.
+mpi       MPI distribution helpers (graceful degradation without mpi4py).
+io        Solution save/load (numpy + JSON, legacy format).
+nest_io   Nest save/load (.nst pickle files, dolo+ objects).
+moments   Spec-driven moment generation (panels → dict[str, float]).
+estimate  SMM estimation (cross-entropy optimizer, criterion composition).
+
+Design
+------
 No model-specific code. No solve loops. No operators.
+Each module has a simple interface that absorbs real complexity inside.
 """
 
 from .cli import parse_run, RunSpec, parse_key_value, make_run_dir

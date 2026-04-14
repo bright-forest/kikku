@@ -14,9 +14,17 @@ import yaml
 
 from kikku.run.mpi import bcast_item, is_root, mpi_map
 
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
 BIG_LOSS = 1e10
 NAN_PENALTY = 1e6
 
+
+# ---------------------------------------------------------------------------
+# Estimation spec loading
+# ---------------------------------------------------------------------------
 
 def load_estimation_spec(path: str) -> dict[str, Any]:
     """Load estimation YAML and optional precomputed moments CSV.
@@ -83,6 +91,10 @@ def _flatten_moments_csv(csv_path: Path) -> dict[str, float]:
                 out[key] = val
     return out
 
+
+# ---------------------------------------------------------------------------
+# SMM criterion composition
+# ---------------------------------------------------------------------------
 
 def _smm_loss(sim_vec: np.ndarray, data_vec: np.ndarray, weights: np.ndarray | None = None) -> float:
     """(sim - data)' W (sim - data) with diagonal W; W = I when weights is None.
@@ -165,6 +177,10 @@ def _is_nan_float(x: Any) -> bool:
         return True
 
 
+# ---------------------------------------------------------------------------
+# Cross-entropy minimizer
+# ---------------------------------------------------------------------------
+
 @dataclass
 class EstimationResult:
     theta: dict[str, float]
@@ -183,28 +199,37 @@ def estimate(
     comm: Any = None,
     verbose: bool = True,
     resume_state: dict[str, Any] | None = None,
+    checkpoint_fn: Callable[[dict], None] | None = None,
+    progress_fn: Callable[[int, dict], None] | None = None,
 ) -> EstimationResult:
     """Minimize criterion via cross-entropy method."""
     opts = dict(method_options or {})
     if method in ("cross-entropy", "ce", "cross_entropy"):
-        return _cross_entropy_minimize(criterion, param_spec, opts, comm, verbose,
-                                       resume_state=resume_state)
+        return _cross_entropy_minimize(
+            criterion,
+            param_spec,
+            opts,
+            comm,
+            verbose,
+            resume_state=resume_state,
+            checkpoint_fn=checkpoint_fn,
+            progress_fn=progress_fn,
+        )
     # TODO: add alternative methods when needed
     raise ValueError(f"unknown method: {method!r}")
 
 
-_SAFE_CRITERION_LOG_COUNT = 0
-
 def _safe_criterion(criterion: Callable[[dict[str, float]], float], theta: dict[str, float]) -> float:
-    global _SAFE_CRITERION_LOG_COUNT
     try:
         return float(criterion(theta))
     except Exception as _exc:
-        if _SAFE_CRITERION_LOG_COUNT < 3:
+        if not hasattr(_safe_criterion, '_err_count'):
+            _safe_criterion._err_count = 0
+        if _safe_criterion._err_count < 3:
             import traceback, sys
             print(f"[criterion EXCEPTION] {type(_exc).__name__}: {_exc}", file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
-            _SAFE_CRITERION_LOG_COUNT += 1
+            _safe_criterion._err_count += 1
         return BIG_LOSS
 
 
@@ -295,6 +320,39 @@ def _elite_weighted_mean_cov(
     return mean_vec, cov
 
 
+def _default_checkpoint_fn(checkpoint_dir: Any) -> Callable[[dict], None] | None:
+    """Return a checkpoint callback that writes pickle to checkpoint_dir."""
+    if not checkpoint_dir:
+        return None
+
+    def _checkpoint(state: dict) -> None:
+        cdir = Path(checkpoint_dir)
+        cdir.mkdir(parents=True, exist_ok=True)
+        tmp_path = cdir / "state.pkl.tmp"
+        with tmp_path.open("wb") as f:
+            pickle.dump(state, f)
+        tmp_path.rename(cdir / "state.pkl")
+
+    return _checkpoint
+
+
+def _default_progress_fn(
+    names: list[str], max_iter: int
+) -> Callable[[int, dict], None]:
+    """Return a progress callback matching the current verbose output."""
+
+    def _progress(it: int, info: dict) -> None:
+        theta_str = "  ".join(
+            f"{n}={info['best_theta'][n]:.4f}" for n in names
+        )
+        print(
+            f"[ce] iter={it + 1}/{max_iter} best_loss={info['best_loss']:.6f} "
+            f"elite_mean={info['elite_mean_loss']:.6f}  {theta_str}"
+        )
+
+    return _progress
+
+
 def _cross_entropy_minimize(
     criterion: Callable[[dict[str, float]], float],
     param_spec: dict[str, Any],
@@ -302,6 +360,8 @@ def _cross_entropy_minimize(
     comm: Any,
     verbose: bool,
     resume_state: dict[str, Any] | None = None,
+    checkpoint_fn: Callable[[dict], None] | None = None,
+    progress_fn: Callable[[int, dict], None] | None = None,
 ) -> EstimationResult:
     names = sorted(param_spec.keys())
     n_samples = int(options.get("n_samples", 48))
@@ -316,8 +376,12 @@ def _cross_entropy_minimize(
     simulation_seed = int(options.get("simulation_seed", 99))
     noise_fraction = float(options.get("noise_fraction", 0.0))
     alpha_smooth = float(options.get("alpha_smooth", 1.0))  # 1.0 = no smoothing
-    checkpoint_dir = options.get("checkpoint_dir")
     max_iter_this_run = int(options.get("max_iter_this_run", max_iter))
+
+    if checkpoint_fn is None:
+        checkpoint_fn = _default_checkpoint_fn(options.get("checkpoint_dir"))
+    if progress_fn is None and verbose:
+        progress_fn = _default_progress_fn(names, max_iter)
 
     n_elite = max(1, min(n_elite, n_samples))
 
@@ -408,30 +472,33 @@ def _cross_entropy_minimize(
                 }
             )
 
-            if checkpoint_dir:
-                cdir = Path(checkpoint_dir)
-                cdir.mkdir(parents=True, exist_ok=True)
+            if checkpoint_fn is not None:
                 state = {
-                    "means": means, "cov": cov,
-                    "best_theta": best_theta, "best_loss": best_loss,
-                    "it": it, "history": history,
+                    "means": means,
+                    "cov": cov,
+                    "best_theta": best_theta,
+                    "best_loss": best_loss,
+                    "it": it,
+                    "history": history,
                     "elite_mean_loss_prev": elite_mean_loss,
                     "rng_state": rng.bit_generator.state,
                 }
-                tmp_path = cdir / "state.pkl.tmp"
-                with tmp_path.open("wb") as f:
-                    pickle.dump(state, f)
-                tmp_path.rename(cdir / "state.pkl")  # atomic on same filesystem
+                checkpoint_fn(state)
 
             if elite_mean_loss_prev is not None:
                 if abs(elite_mean_loss_prev - elite_mean_loss) < tol:
                     converged = True
             elite_mean_loss_prev = elite_mean_loss
 
-            if verbose:
-                theta_str = '  '.join(f'{n}={best_theta[n]:.4f}' for n in names)
-                print(f"[ce] iter={it + 1}/{max_iter} best_loss={best_loss:.6f} "
-                      f"elite_mean={elite_mean_loss:.6f}  {theta_str}")
+            if progress_fn is not None:
+                progress_fn(
+                    it,
+                    {
+                        "best_theta": best_theta,
+                        "best_loss": best_loss,
+                        "elite_mean_loss": elite_mean_loss,
+                    },
+                )
 
         # --- Memory diagnostics (rank 0, every iteration) ---
         if is_root(comm) and verbose:
@@ -509,6 +576,10 @@ def _cross_entropy_minimize(
         sim_moments=dict(sim_moments or {}),
     )
 
+
+# ---------------------------------------------------------------------------
+# Diagnostics
+# ---------------------------------------------------------------------------
 
 def diagnostics(
     result: EstimationResult,

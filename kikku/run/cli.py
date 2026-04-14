@@ -10,14 +10,11 @@ No model-specific knowledge.  No mpi4py import.
 from __future__ import annotations
 
 import argparse
-import sys
 import warnings
 import yaml
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-
-from kikku.dynx.methods import parse_method_override_str
 
 
 # ---------------------------------------------------------------------------
@@ -26,8 +23,57 @@ from kikku.dynx.methods import parse_method_override_str
 
 @dataclass(frozen=True)
 class RunSpec:
+    """Frozen specification for a single model run.
+
+    Built by ``parse_run`` from CLI arguments + YAML files.
+    Examples receive this as their sole configuration object.
+
+    Fields are grouped by function:
+
+    Identity
+        name, model_dir
+
+    Parameter tiers (precedence: CLI > override-file > base YAML)
+        calib       — calibration parameters (economic: beta, r, tau, ...)
+        settings    — numerical settings (grid sizes, tolerances, ...)
+        config      — extra overrides (no tier enforcement)
+
+    Method selection
+        method           — global method tag (None → YAML default)
+        method_overrides — per-stage overrides {(stage, target, scheme): tag}
+        methods          — allowed method names (for validation)
+
+    Run mode
+        mode             — 'single', 'compare', or 'sweep'
+        compare_methods  — method specs for compare mode
+
+    Output
+        output_dir — run output directory (auto-created)
+        run_tag    — user-supplied tag (informational)
+
+    Flags
+        verbose, trace, mpi, gpu
+
+    Simulation
+        simulate, n_sim, seed, plots
+
+    Sweep
+        sweep_grids  — grid sizes for legacy --sweep-grids
+        sweep_params — raw axis specs for --sweep-params
+        sweep_runs   — best-of-n repetitions
+        warmup       — JIT warmup before timing
+
+    Experiment
+        experiment_set, config_id, run_id
+
+    Plot options
+        skip_egm_plots, csv_export
+
+    Extension
+        extra — model-specific flags from extra_args
+    """
     name: str
-    syntax_dir: Path
+    model_dir: Path
 
     calib: dict
     settings: dict
@@ -66,6 +112,16 @@ class RunSpec:
 
     extra: dict
 
+    def __getattr__(self, name):
+        if name == 'syntax_dir':
+            import warnings
+            warnings.warn(
+                "RunSpec.syntax_dir is deprecated; use RunSpec.model_dir",
+                DeprecationWarning, stacklevel=2)
+            return self.model_dir
+        raise AttributeError(
+            f"'{type(self).__name__}' has no attribute {name!r}")
+
 
 # ---------------------------------------------------------------------------
 # parse_run — the single public entry point
@@ -79,7 +135,7 @@ def parse_run(
     output: str = 'results',
     extra_args: dict | None = None,
 ) -> RunSpec:
-    """Build a ``RunSpec`` from ``sys.argv``.
+    """Build a ``RunSpec`` from parsed command-line arguments.
 
     Parameters
     ----------
@@ -186,10 +242,10 @@ def parse_run(
 
     args = parser.parse_args()
 
-    # ---- resolve syntax dir ----------------------------------------------
-    syntax_dir = Path(syntax).resolve()
-    calib_path = syntax_dir / 'calibration.yaml'
-    settings_path = syntax_dir / 'settings.yaml'
+    # ---- resolve model dir -----------------------------------------------
+    model_dir = Path(syntax).resolve()
+    calib_path = model_dir / 'calibration.yaml'
+    settings_path = model_dir / 'settings.yaml'
 
     # ---- load base YAML --------------------------------------------------
     base_calib = _load_yaml_section(calib_path, 'calibration')
@@ -210,7 +266,7 @@ def parse_run(
     cli_method_overrides = {}
     for group in args.method_override:
         for item in group:
-            key, tag = parse_method_override_str(item)
+            key, tag = _parse_method_override_str(item)
             cli_method_overrides[key] = tag
 
     # ---- parse override file ---------------------------------------------
@@ -277,7 +333,7 @@ def parse_run(
             experiment_set = yaml.safe_load(f)
 
     # ---- output directory ------------------------------------------------
-    output_dir = Path(make_run_dir(args.output_dir, tag=args.run_tag))
+    output_dir = Path(make_run_dir(args.output_dir))
 
     # ---- collect extras --------------------------------------------------
     extra = {}
@@ -289,7 +345,7 @@ def parse_run(
     # ---- build RunSpec ---------------------------------------------------
     return RunSpec(
         name=name,
-        syntax_dir=syntax_dir,
+        model_dir=model_dir,
         calib=calib,
         settings=settings,
         config=config,
@@ -324,6 +380,27 @@ def parse_run(
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+def _parse_method_override_str(raw: str) -> tuple[tuple[str, str, str], str]:
+    """Parse 'stage.target.scheme=TAG' into ((stage, target, scheme), tag).
+
+    Shorthand 'stage.scheme=TAG' defaults target to 'cntn_to_dcsn_mover'.
+    """
+    if '=' not in raw:
+        raise ValueError(f"Method override must be path=TAG, got: {raw}")
+    path, tag = raw.rsplit('=', 1)
+    parts = path.split('.')
+    if len(parts) == 3:
+        stage, target, scheme = parts
+    elif len(parts) == 2:
+        stage, scheme = parts
+        target = 'cntn_to_dcsn_mover'
+    else:
+        raise ValueError(
+            f"Method override path must be stage.target.scheme or "
+            f"stage.scheme, got: {path}")
+    return (stage, target, scheme), tag.strip()
+
 
 def _load_yaml_section(path: Path, section: str) -> dict:
     """Load a top-level section from a YAML file, returning flat dict."""
@@ -401,26 +478,28 @@ def make_run_dir(base_dir, tag=None):
     """Create and return a run output directory.
 
     ``base_dir/YYYY-MM-DD/NNN/`` with auto-incremented NNN.
-    Every run gets the next number. ``tag`` is ignored (kept for
-    backward compat but has no effect).
+    Every run gets the next number.
 
-    MPI-safe: if mpi4py is available and size > 1, rank 0 creates
-    the directory and broadcasts the path to all ranks so every
-    process uses the same folder.
+    MPI-safe: rank 0 creates the directory and broadcasts the path to all
+    ranks so every process uses the same folder (via ``kikku.run.mpi``).
 
     Example::
 
         results/durables/2026-03-25/001/
         results/durables/2026-03-25/002/
     """
-    # Detect MPI
-    comm, rank = None, 0
-    try:
-        from mpi4py import MPI
-        comm = MPI.COMM_WORLD
-        rank = comm.Get_rank()
-    except ImportError:
-        pass
+    from .mpi import bcast_item, get_comm, rank_size
+
+    if tag is not None:
+        warnings.warn(
+            "make_run_dir 'tag' parameter is deprecated and ignored. "
+            "It will be removed in a future version.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+    comm = get_comm()
+    rank, _ = rank_size(comm)
 
     run_dir_str = None
     if rank == 0:
@@ -436,11 +515,7 @@ def make_run_dir(base_dir, tag=None):
         run_dir.mkdir(parents=True, exist_ok=True)
         run_dir_str = str(run_dir)
 
-    # Broadcast to all ranks
-    if comm is not None and comm.Get_size() > 1:
-        run_dir_str = comm.bcast(run_dir_str, root=0)
-
-    return run_dir_str
+    return bcast_item(run_dir_str, comm, root=0)
 
 
 # ---------------------------------------------------------------------------

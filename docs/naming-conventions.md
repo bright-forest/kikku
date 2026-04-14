@@ -1,6 +1,6 @@
 # Naming Conventions for Stage Operators and Value Objects
 
-This document proposes consistent code-level naming conventions for `kikku`-based models, grounded in the bellman-ddsl symbol reference and validated against the Matsya RAG (consulted 18 Mar 2026). The retirement choice model is used as the running example.
+Code-level naming conventions for `kikku`-based models, grounded in the bellman-ddsl symbol reference. The retirement choice model is the running example.
 
 ## Guiding principles
 

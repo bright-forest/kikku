@@ -1,4 +1,4 @@
-"""Runner infrastructure for DDSL model examples (v2 RunSpec / parse_cli)."""
+"""Runner infrastructure for DDSL model examples (v3 RunSpec / parse_cli)."""
 
 from .cli import parse_cli, parse_key_value, make_run_dir
 from .make_test import make_test

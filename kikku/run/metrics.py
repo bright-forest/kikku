@@ -14,24 +14,22 @@ if TYPE_CHECKING:
 def _derive_row_label(
     t: "TestSpec",
 ) -> str:
-    """When ``label==""``, comma-join sorted key=value (§12.1, locked decisions)."""
+    """When ``label==""``, derive deterministically from ``t.slots`` (§5.7, v3)."""
     if t.label:
         return t.label
     frags: list[str] = []
-    for k, v in sorted(t.params.items()):
-        if v is None or v == "":
+    for slot_name in sorted(t.slots):
+        val = t.slots[slot_name]
+        if not isinstance(val, dict):
+            frags.append(f"{slot_name}={val}")
             continue
-        frags.append(f"{k}={v}")
-    if t.methods:
-        for kt, v in sorted(t.methods.items(), key=lambda x: (len(x[0]), x[0])):
+        for k, v in sorted(val.items(), key=lambda x: str(x[0])):
             if v is None or v == "":
                 continue
-            d = ".".join(kt)
-            frags.append(f"{d}={v}")
-    for k, v in sorted(t.settings.items()):
-        if v is None or v == "":
-            continue
-        frags.append(f"{k}={v}")
+            if isinstance(v, (dict, list)):
+                frags.append(f"{slot_name}.{k}=…")
+                continue
+            frags.append(f"{slot_name}.{k}={v}")
     return ",".join(sorted(frags))
 
 

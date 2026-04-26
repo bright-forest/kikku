@@ -273,6 +273,12 @@ def _compare_to_axis(s: str) -> tuple[RangeAxis, tuple[str, ...]]:
 
 
 def _apply_override_event(base: dict, parts: list[str]) -> None:
+    """Replay one ``--slot-override`` event onto ``base``.
+
+    ``merge_log`` carries the raw argv strings (not pre-parsed
+    ``(slot, path, value)`` triples) so the log stays inspectable as the
+    user typed it. Parsing happens here, at replay time.
+    """
     for p in parts:
         if not str(p).strip():
             continue
@@ -366,8 +372,6 @@ def _expand_test_set(
 ) -> tuple[TestSpec, ...]:
     """Cartesian product of axes; assemble each row's slot bundle + label."""
     if not axes:
-        if not base:
-            return tuple(make_test([{}]))
         return tuple(make_test([base]))
     rows: list[TestSpec] = []
     combos = list(product(*[axis.rows for axis in axes]))
@@ -601,7 +605,9 @@ def _build_argparser(
         help=(
             "Slot bundle as JSON/YAML object or @file. Top-level keys are "
             "slot names; values mirror the slot's YAML structure. Merged in "
-            "argv order with --slot-override (last-writer-wins, deep)."
+            "argv order with --slot-override (last-writer-wins, deep). "
+            "Scalars parsed via yaml.safe_load (YAML 1.1: yes/on/y → True, "
+            "no/off/n → False; quote string-literal booleans if intended)."
         ),
     )
     p.add_argument(
@@ -612,7 +618,10 @@ def _build_argparser(
             "(1) AXIS form — $slot.path=[v1, v2, …] declares one axis along "
             "a slot path, list elements are values at that path; "
             "(2) BUNDLE-LIST form — JSON/YAML list of bundle dicts (or @file). "
-            "Repeat the flag for Cartesian product across axes."
+            "Repeat the flag for Cartesian product across axes. "
+            "Scalars parsed via yaml.safe_load (YAML 1.1 booleans apply, see "
+            "--slot-override). Float labels normalize trailing zeros: "
+            "[0.05, 0.10] → labels '0.05' and '0.1'."
         ),
     )
     p.add_argument("--output-dir", type=str, default=default_output)

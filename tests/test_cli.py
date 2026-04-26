@@ -57,7 +57,8 @@ def test_compare_two_rows_and_labels(monkeypatch, base_dir):
     )
     assert run.mode == "compare"
     assert len(run.test_set) == 2
-    assert {run.test_set[0].label, run.test_set[1].label} == {repr(0.92), repr(0.99)}
+    # v4 §5.2: labels are str(value), unquoted in tables.
+    assert {run.test_set[0].label, run.test_set[1].label} == {str(0.92), str(0.99)}
     bvals = {
         run.test_set[0].slots["draw"]["beta"],
         run.test_set[1].slots["draw"]["beta"],

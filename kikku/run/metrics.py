@@ -3,6 +3,73 @@
 Formats sweep results as markdown or LaTeX tables.
 No model-specific knowledge.
 """
+from __future__ import annotations
+
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .types import TestSpec
+
+
+def _derive_row_label(
+    t: "TestSpec",
+) -> str:
+    """When ``label==""``, comma-join sorted key=value (§12.1, locked decisions)."""
+    if t.label:
+        return t.label
+    frags: list[str] = []
+    for k, v in sorted(t.params.items()):
+        if v is None or v == "":
+            continue
+        frags.append(f"{k}={v}")
+    if t.methods:
+        for kt, v in sorted(t.methods.items(), key=lambda x: (len(x[0]), x[0])):
+            if v is None or v == "":
+                continue
+            d = ".".join(kt)
+            frags.append(f"{d}={v}")
+    for k, v in sorted(t.settings.items()):
+        if v is None or v == "":
+            continue
+        frags.append(f"{k}={v}")
+    return ",".join(sorted(frags))
+
+
+def _maybe_truncate(s: str, max_len: int | None) -> str:
+    if max_len is None or len(s) <= max_len:
+        return s
+    return s[: max(0, max_len - 1)] + "…"
+
+
+def write_results_table(
+    results: list[Any],
+    path: str,
+    fmt: str = "markdown",
+    float_fmt: str = ".4f",
+    display_max_label: int | None = 200,
+) -> None:
+    """Build a flat table from ``list[SweepResult]`` (no ``**`` merge on the point)."""
+    from .sweep import SweepResult
+    from .types import TestSpec
+
+    if not results:
+        write_table(path, [], ["label"], fmt=fmt, float_fmt=float_fmt)
+        return
+    metric_names: set[str] = set()
+    rows_out: list[dict] = []
+    for sr in results:
+        if not isinstance(sr, SweepResult):
+            raise TypeError("write_results_table expects SweepResult elements")
+        if not isinstance(sr.point, TestSpec):
+            raise TypeError("write_results_table expects point to be a TestSpec")
+        lab = _derive_row_label(sr.point)
+        lab_disp = _maybe_truncate(lab, display_max_label)
+        mrow = {**sr.metrics}
+        metric_names |= set(mrow.keys())
+        rows_out.append({"label": lab_disp, **mrow})
+    col_metrics = sorted(metric_names)
+    columns = ["label"] + col_metrics
+    write_table(path, rows_out, columns, fmt=fmt, float_fmt=float_fmt)
 
 
 def format_table(

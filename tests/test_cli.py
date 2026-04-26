@@ -1,186 +1,300 @@
-"""Tests for kikku.run.cli — parse_run and RunSpec."""
+"""Tests for v2 parse_cli, TestSpec, RunSpec, merge order (kikku-runspec-v2)."""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
 
 import pytest
 import yaml
-from pathlib import Path
 
-from kikku.run.cli import parse_run, RunSpec
+from kikku.run.cli import parse_cli
+from kikku.run.types import RunSpec, SimSpec
+
+MODES = ["compare", "sweep", "simulate", "mpi", "gpu", "plots"]
 
 
 @pytest.fixture
-def syntax_dir(tmp_path):
-    """Minimal syntax directory with calibration.yaml and settings.yaml."""
+def base_dir(tmp_path) -> Path:
+    """calibration + settings; keys disjoint except we add overlap variant elsewhere."""
     calib = {
-        'calibration': {
-            'beta': 0.96,
-            'r': 0.02,
-            'delta': 1.0,
+        "calibration": {
+            "beta": 0.96,
+            "r": 0.02,
         }
     }
     settings = {
-        'settings': {
-            'grid_size': 3000,
-            'T': 20,
-            'plot_age': 5,
+        "settings": {
+            "grid_size": 3000,
+            "T": 20,
         }
     }
-    (tmp_path / 'calibration.yaml').write_text(yaml.dump(calib))
-    (tmp_path / 'settings.yaml').write_text(yaml.dump(settings))
+    (tmp_path / "calibration.yaml").write_text(yaml.dump(calib))
+    (tmp_path / "settings.yaml").write_text(yaml.dump(settings))
     return tmp_path
 
 
-def _run(monkeypatch, syntax_dir, argv, **kwargs):
-    """Helper: mock sys.argv and call parse_run."""
-    import sys
-    monkeypatch.setattr(sys, 'argv', ['test'] + argv)
-    defaults = dict(
-        name='test_model',
-        syntax=str(syntax_dir),
-        methods=['FUES', 'NEGM'],
-        modes=['compare', 'sweep', 'simulate'],
-        output=str(syntax_dir / 'results'),
+def _ps(monkeypatch, base: Path, argv: list, **kw):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["prologue"] + argv,
     )
-    defaults.update(kwargs)
-    return parse_run(**defaults)
-
-
-def test_parse_run_defaults(monkeypatch, syntax_dir):
-    run = _run(monkeypatch, syntax_dir, [])
-    assert isinstance(run, RunSpec)
-    assert run.name == 'test_model'
-    assert run.method is None
-    assert run.mode == 'single'
-    assert run.compare_methods is None
-    assert run.verbose is False
-    assert run.simulate is False
-    assert run.sweep_grids is None
-    assert run.sweep_params == []
-    assert run.calib['beta'] == 0.96
-    assert run.settings['grid_size'] == 3000
-    assert run.config == {}
-    assert run.mpi is False
-    assert run.gpu is False
-
-
-def test_parse_run_method_selection(monkeypatch, syntax_dir):
-    run = _run(monkeypatch, syntax_dir, ['--method', 'NEGM'])
-    assert run.method == 'NEGM'
-
-
-def test_parse_run_method_overrides(monkeypatch, syntax_dir):
-    run = _run(monkeypatch, syntax_dir, [
-        '--method-override', 'adjuster_cons.cntn_to_dcsn_builder.upper_envelope=NEGM',
-        '--method-override', 'keeper_cons.upper_envelope=RFC',
-    ])
-    assert run.method_overrides == {
-        ('adjuster_cons', 'cntn_to_dcsn_builder', 'upper_envelope'): 'NEGM',
-        ('keeper_cons', 'cntn_to_dcsn_builder', 'upper_envelope'): 'RFC',
+    d = {
+        "name": "m",
+        "base_spec": str(base),
+        "modes": MODES,
+        "output": str(base / "out"),
     }
+    d.update(kw)
+    return parse_cli(**d)
 
 
-def test_parse_run_method_overrides_empty_by_default(monkeypatch, syntax_dir):
-    run = _run(monkeypatch, syntax_dir, [])
-    assert run.method_overrides == {}
+def test_single_test_default(monkeypatch, base_dir):
+    run = _ps(monkeypatch, base_dir, [])
+    assert isinstance(run, RunSpec)
+    assert run.mode == "single"
+    assert len(run.test_set) == 1
+    t = run.test_set[0]
+    assert t.params == {}
+    assert t.methods is None
+    assert t.settings == {}
+    assert t.label == ""
+    assert run.sim is None
 
 
-def test_parse_run_compare_mode(monkeypatch, syntax_dir):
-    run = _run(monkeypatch, syntax_dir, ['--compare', 'FUES', 'NEGM'])
-    assert run.mode == 'compare'
-    assert run.compare_methods == ('FUES', 'NEGM')
-
-
-def test_parse_run_compare_invalid_method(monkeypatch, syntax_dir):
-    with pytest.raises(SystemExit):
-        _run(monkeypatch, syntax_dir, ['--compare', 'FUES', 'INVALID'])
-
-
-def test_mutually_exclusive_modes(monkeypatch, syntax_dir):
-    with pytest.raises(SystemExit):
-        _run(monkeypatch, syntax_dir,
-             ['--compare', 'FUES', 'NEGM', '--sweep'])
-
-
-def test_tier_enforcement_calib_in_settings(monkeypatch, syntax_dir):
-    """Known calib key 'beta' via --setting-override should error."""
-    with pytest.raises(SystemExit, match='beta'):
-        _run(monkeypatch, syntax_dir,
-             ['--setting-override', 'beta=0.99'])
-
-
-def test_tier_enforcement_settings_in_calib(monkeypatch, syntax_dir):
-    """Known settings key 'grid_size' via --calib-override should error."""
-    with pytest.raises(SystemExit, match='grid_size'):
-        _run(monkeypatch, syntax_dir,
-             ['--calib-override', 'grid_size=5000'])
-
-
-def test_override_precedence(monkeypatch, syntax_dir, tmp_path):
-    """CLI beats override-file beats base YAML."""
-    override_file = tmp_path / 'overrides.yaml'
-    override_file.write_text(yaml.dump({'beta': 0.90, 'r': 0.05}))
-
-    run = _run(monkeypatch, syntax_dir, [
-        '--override-file', str(override_file),
-        '--calib-override', 'beta=0.85',
-    ])
-    assert run.calib['beta'] == 0.85
-    assert run.calib['r'] == 0.05
-
-
-def test_output_dir_creation(monkeypatch, syntax_dir):
-    run = _run(monkeypatch, syntax_dir, [])
-    assert Path(run.output_dir).exists()
-
-
-def test_modes_control_help(monkeypatch, syntax_dir):
-    """modes=['compare'] only — --sweep should not be recognized."""
-    with pytest.raises(SystemExit):
-        _run(monkeypatch, syntax_dir, ['--sweep'],
-             modes=['compare'])
-
-
-def test_extra_args(monkeypatch, syntax_dir):
-    run = _run(monkeypatch, syntax_dir,
-               ['--use-taxes'],
-               extra_args={'--use-taxes': {'action': 'store_true'}})
-    assert run.extra['use_taxes'] is True
-
-
-def test_sweep_grids_parsing(monkeypatch, syntax_dir):
-    run = _run(monkeypatch, syntax_dir,
-               ['--sweep', '--sweep-grids', '500,1000,2000'])
-    assert run.mode == 'sweep'
-    assert run.sweep_grids == [500, 1000, 2000]
-
-
-def test_sweep_params_parsing(monkeypatch, syntax_dir):
-    run = _run(
-        monkeypatch, syntax_dir,
-        ['--sweep', '--sweep-params', 'grid_size=100,200', 'beta=0.95,0.96'],
+def test_compare_two_rows_and_labels(monkeypatch, base_dir):
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        ["--compare", "beta=0.92,0.99"],
     )
-    assert run.mode == 'sweep'
-    assert run.sweep_params == ['grid_size=100,200', 'beta=0.95,0.96']
+    assert run.mode == "compare"
+    assert len(run.test_set) == 2
+    assert {run.test_set[0].label, run.test_set[1].label} == {repr(0.92), repr(0.99)}
+    bvals = {run.test_set[0].params["beta"], run.test_set[1].params["beta"]}
+    assert bvals == {0.92, 0.99}
 
 
-def test_runspec_frozen(monkeypatch, syntax_dir):
-    run = _run(monkeypatch, syntax_dir, [])
-    with pytest.raises(AttributeError):
-        run.method = 'NEGM'
+def test_sweep_cartesian_product(monkeypatch, base_dir):
+    pl = json.dumps([{"beta": 0.9}, {"beta": 0.91}])
+    ml = json.dumps(
+        [
+            {
+                "stage.sub.target.scheme1": "FUES",
+            },
+            {
+                "stage.sub.target.scheme1": "MSS",
+            },
+        ]
+    )
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        [
+            "--sweep",
+            f"--params-range={pl}",
+            f"--methods-range={ml}",
+        ],
+    )
+    assert run.mode == "sweep"
+    assert len(run.test_set) == 4
+    sigs = {
+        (t.params.get("beta"), tuple(t.methods.items()) if t.methods else None)
+        for t in run.test_set
+    }
+    assert len(sigs) == 4
+    t0 = run.test_set[0]
+    assert ("stage", "sub", "target", "scheme1") in (t0.methods or {})
 
 
-def test_config_override_warning(monkeypatch, syntax_dir):
-    """--config-override with a known calib key should warn."""
-    import warnings
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter('always')
-        run = _run(monkeypatch, syntax_dir,
-                    ['--config-override', 'beta=0.99'])
-        calib_warnings = [x for x in w if 'beta' in str(x.message)]
-        assert len(calib_warnings) >= 1
+def test_params_settings_overlap_raises(monkeypatch, tmp_path):
+    cal = {"calibration": {"dup": 1, "a": 1}}
+    st = {"settings": {"dup": 2, "b": 2}}
+    (tmp_path / "calibration.yaml").write_text(yaml.dump(cal))
+    (tmp_path / "settings.yaml").write_text(yaml.dump(st))
+    with pytest.raises(ValueError, match="params_keys"):
+        _ps(monkeypatch, tmp_path, [])
 
 
-def test_setting_override_merges(monkeypatch, syntax_dir):
-    run = _run(monkeypatch, syntax_dir,
-               ['--setting-override', 'grid_size=5000'])
-    assert run.settings['grid_size'] == 5000
-    assert run.settings['T'] == 20
+def test_unknown_param_key(monkeypatch, base_dir):
+    with pytest.raises(ValueError, match="Unknown params key"):
+        _ps(
+            monkeypatch,
+            base_dir,
+            ["--params-override", "notakey=1"],
+        )
+
+
+def test_methods_override_too_few_dotted_parts(monkeypatch, base_dir):
+    with pytest.raises(ValueError, match="three dot-separated"):
+        _ps(
+            monkeypatch,
+            base_dir,
+            ["--methods-override", "no=FUES"],
+        )
+
+
+def test_merge_precedence_spec_then_override(monkeypatch, base_dir):
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        [
+            "--params-spec",
+            '{"beta":0.95}',
+            "--params-override",
+            "beta=0.97",
+        ],
+    )
+    assert run.test_set[0].params["beta"] == 0.97
+
+
+def test_merge_precedence_override_then_spec(monkeypatch, base_dir):
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        [
+            "--params-override",
+            "beta=0.97",
+            "--params-spec",
+            '{"beta":0.95}',
+        ],
+    )
+    assert run.test_set[0].params["beta"] == 0.95
+
+
+def test_dict_literal_matches_atfile(tmp_path, monkeypatch, base_dir):
+    f = tmp_path / "p.yaml"
+    f.write_text("beta: 0.88\nr: 0.03\n")
+    a = _ps(
+        monkeypatch,
+        base_dir,
+        [f"--params-spec=@{f}"],
+    )
+    b = _ps(
+        monkeypatch,
+        base_dir,
+        ['--params-spec', '{"beta":0.88,"r":0.03}'],
+    )
+    assert a.test_set[0] == b.test_set[0]
+
+
+def test_compare_and_sweep_mutually_exclusive(monkeypatch, base_dir):
+    with pytest.raises(ValueError, match="compare and --sweep"):
+        _ps(
+            monkeypatch,
+            base_dir,
+            [
+                "--compare",
+                "beta=0.9,0.91",
+                "--sweep",
+            ],
+        )
+
+
+def test_simulate_creates_simspec(monkeypatch, base_dir):
+    r = _ps(monkeypatch, base_dir, ["--simulate", "--n-sim", "5000", "--seed", "3"])
+    assert isinstance(r.sim, SimSpec)
+    assert r.sim.n_sim == 5000
+    assert r.sim.seed == 3
+
+    r2 = _ps(monkeypatch, base_dir, [])
+    assert r2.sim is None
+
+
+def test_params_range_atfile_roundtrip(tmp_path, monkeypatch, base_dir):
+    f = tmp_path / "pr.yaml"
+    f.write_text(
+        yaml.dump(
+            [
+                {"beta": 0.9},
+                {"beta": 0.91},
+            ]
+        )
+    )
+    inline = json.dumps([{"beta": 0.9}, {"beta": 0.91}])
+    a = _ps(
+        monkeypatch,
+        base_dir,
+        [f"--params-range=@{f}"],
+    )
+    b = _ps(
+        monkeypatch,
+        base_dir,
+        [f"--params-range={inline}"],
+    )
+    assert a.test_set == b.test_set
+    assert a.mode == "sweep" and b.mode == "sweep"
+    assert len(a.test_set) == 2
+
+
+def test_params_spec_unknown_key_in_literal_dict(monkeypatch, base_dir):
+    with pytest.raises(ValueError, match="Unknown params key"):
+        _ps(
+            monkeypatch,
+            base_dir,
+            ['--params-spec', '{"notakey":1}'],
+        )
+
+
+def test_settings_override_misroutes_param_key_to_settings(monkeypatch, base_dir):
+    with pytest.raises(ValueError, match="params-override|params-spec"):
+        _ps(
+            monkeypatch,
+            base_dir,
+            ["--settings-override", "beta=0.96"],
+        )
+
+
+def test_compare_on_methods_path_tuple_keys(monkeypatch, base_dir):
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        [
+            "--compare",
+            "adjuster_cons.cntn_to_dcsn_mover.bellman_backward=EGM,NEGM",
+        ],
+    )
+    assert run.mode == "compare"
+    assert len(run.test_set) == 2
+    path = (
+        "adjuster_cons",
+        "cntn_to_dcsn_mover",
+        "bellman_backward",
+    )
+    for t in run.test_set:
+        assert t.methods is not None
+        assert path in t.methods
+        assert t.methods[path] in ("EGM", "NEGM")
+
+
+def test_params_override_folds_into_params_range_rows(monkeypatch, base_dir):
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        [
+            "--params-override",
+            "r=0.03",
+            "--params-range",
+            json.dumps([{"beta": 0.9}, {"beta": 0.91}]),
+        ],
+    )
+    assert run.mode == "sweep"
+    for t in run.test_set:
+        assert t.params["r"] == 0.03
+    assert {t.params["beta"] for t in run.test_set} == {0.9, 0.91}
+
+
+def test_compare_plus_params_range_rejected(monkeypatch, base_dir):
+    with pytest.raises(ValueError, match="--compare cannot be combined"):
+        _ps(
+            monkeypatch,
+            base_dir,
+            [
+                "--compare",
+                "beta=0.9,0.91",
+                "--params-range",
+                json.dumps([{"r": 0.03}]),
+            ],
+        )

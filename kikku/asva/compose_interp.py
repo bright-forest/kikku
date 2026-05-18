@@ -1,11 +1,11 @@
-"""Generic compose-and-reapproximate horse for arrival movers.
+"""Generic compose-and-reapproximate horse for arrival builders.
 
 Given a decision-perch function defined on an irregular grid
 (e.g. the endogenous EGM grid) and an arrival-to-decision
 transition g, this horse composes f(g(x)) and evaluates it
 on a Cartesian arrival grid via interpolation.
 
-This is the computational core of the dcsn_to_arvl_mover:
+This is the computational core of the dcsn_to_arvl_builder:
 it takes decision-perch arrays, maps the target grid through
 g, and interpolates.
 """

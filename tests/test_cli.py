@@ -69,12 +69,12 @@ def test_parse_run_method_selection(monkeypatch, syntax_dir):
 
 def test_parse_run_method_overrides(monkeypatch, syntax_dir):
     run = _run(monkeypatch, syntax_dir, [
-        '--method-override', 'adjuster_cons.cntn_to_dcsn_mover.upper_envelope=NEGM',
+        '--method-override', 'adjuster_cons.cntn_to_dcsn_builder.upper_envelope=NEGM',
         '--method-override', 'keeper_cons.upper_envelope=RFC',
     ])
     assert run.method_overrides == {
-        ('adjuster_cons', 'cntn_to_dcsn_mover', 'upper_envelope'): 'NEGM',
-        ('keeper_cons', 'cntn_to_dcsn_mover', 'upper_envelope'): 'RFC',
+        ('adjuster_cons', 'cntn_to_dcsn_builder', 'upper_envelope'): 'NEGM',
+        ('keeper_cons', 'cntn_to_dcsn_builder', 'upper_envelope'): 'RFC',
     }
 
 

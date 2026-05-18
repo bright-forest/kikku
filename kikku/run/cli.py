@@ -384,7 +384,7 @@ def parse_run(
 def _parse_method_override_str(raw: str) -> tuple[tuple[str, str, str], str]:
     """Parse 'stage.target.scheme=TAG' into ((stage, target, scheme), tag).
 
-    Shorthand 'stage.scheme=TAG' defaults target to 'cntn_to_dcsn_mover'.
+    Shorthand 'stage.scheme=TAG' defaults target to 'cntn_to_dcsn_builder'.
     """
     if '=' not in raw:
         raise ValueError(f"Method override must be path=TAG, got: {raw}")
@@ -394,7 +394,7 @@ def _parse_method_override_str(raw: str) -> tuple[tuple[str, str, str], str]:
         stage, target, scheme = parts
     elif len(parts) == 2:
         stage, scheme = parts
-        target = 'cntn_to_dcsn_mover'
+        target = 'cntn_to_dcsn_builder'
     else:
         raise ValueError(
             f"Method override path must be stage.target.scheme or "

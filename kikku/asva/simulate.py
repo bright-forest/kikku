@@ -19,8 +19,8 @@ Shock injection points (per-transition, not per-stage):
     =========== =================== ===========================
     Point       When                Backward conjugate
     =========== =================== ===========================
-    shock_arvl  before agent acts   E in dcsn_to_arvl_mover
-    shock_cntn  after agent acts    E inside cntn_to_dcsn_mover
+    shock_arvl  before agent acts   E in dcsn_to_arvl_builder
+    shock_cntn  after agent acts    E inside cntn_to_dcsn_builder
     twister     between periods     inter-period expectation
     =========== =================== ===========================
 """

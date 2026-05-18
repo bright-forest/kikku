@@ -1,4 +1,4 @@
-"""Generic EGM backward movers (cntn_to_dcsn_mover).
+"""Generic EGM backward builders (cntn_to_dcsn_builder).
 
 Provides factory functions that accept sub-equation callables
 (the "EGM recipe") and return compiled EGM operators:

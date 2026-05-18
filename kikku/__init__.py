@@ -2,5 +2,5 @@
 
 Sub-packages:
     dynx  — structural layer (I/O, stage maker, period maker, graphs)
-    asva  — operator/mover factories (EGM, etc.)
+    asva  — operator/builder factories (EGM, etc.)
 """

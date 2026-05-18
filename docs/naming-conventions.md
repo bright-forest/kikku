@@ -6,7 +6,7 @@ Code-level naming conventions for `kikku`-based models, grounded in the bellman-
 
 1. **Perch suffixes are mandatory on arrays**: `_arvl`, `_dcsn`, `_cntn` tell you *where* in the stage timeline the quantity lives.
 2. **Refinement suffixes distinguish EGM pipeline stages**: `_hat` (raw EGM correspondence), `_ref` (after upper-envelope cleaning).
-3. **Operator/function names mirror the YAML equation blocks**: `cntn_to_dcsn_mover`, `dcsn_to_arvl_mover`, etc.
+3. **Operator/function names mirror the YAML equation blocks**: `cntn_to_dcsn_builder`, `dcsn_to_arvl_builder`, etc.
 4. **Stage names are domain nouns** (`work_cons`, `retire_cons`, `labour_mkt_decision`), not implementation labels.
 5. **Sub-equation callables carry `fn_` prefix** to distinguish them from array data.
 
@@ -88,7 +88,7 @@ From the bellman-ddsl symbol reference:
 
 Output arrays follow the same scheme with `_ref` suffix: `x_dcsn_ref`, `v_dcsn_ref`, `c_dcsn_ref`, `x_cntn_ref`.
 
-## Operator and mover names
+## Operator and builder names
 
 ### From YAML equation blocks to code functions
 
@@ -98,12 +98,12 @@ The bellman-ddsl spec defines four equation blocks per stage. Each maps to a cod
 |-----------|------|--------------------|-----------|
 | `arvl_to_dcsn_transition` | $\mathrm{g}_{\prec\circ}$ | `g_arvl_to_dcsn` | forward |
 | `dcsn_to_cntn_transition` | $\mathrm{g}_{\circ\succ}$ | `g_dcsn_to_cntn` | forward |
-| `cntn_to_dcsn_mover` | $\mathbb{B}$ | `mover_cntn_to_dcsn` | backward |
-| `dcsn_to_arvl_mover` | $\mathbb{I}$ | `mover_dcsn_to_arvl` | backward |
+| `cntn_to_dcsn_builder` | $\mathbb{B}$ | `builder_cntn_to_dcsn` | backward |
+| `dcsn_to_arvl_builder` | $\mathbb{I}$ | `builder_dcsn_to_arvl` | backward |
 
 ### Sub-equation callables (EGM recipe)
 
-Within `cntn_to_dcsn_mover`, the EGM method decomposes $\mathbb{B}$ into sub-equations. These are the `fn_*` callables passed to `kikku.asva.make_egm_1d` (scalar) or `kikku.asva.make_egm` (K-dimensional):
+Within `cntn_to_dcsn_builder`, the EGM method decomposes $\mathbb{B}$ into sub-equations. These are the `fn_*` callables passed to `kikku.asva.make_egm_1d` (scalar) or `kikku.asva.make_egm` (K-dimensional):
 
 | Sub-equation | YAML | `fn_*` callable | Signature |
 |-------------|------|-----------------|-----------|
@@ -113,7 +113,7 @@ Within `cntn_to_dcsn_mover`, the EGM method decomposes $\mathbb{B}$ into sub-equ
 | Concavity | (diagnostic) | `fn_concavity` | `(c_i, ddv_cntn_i, fixed_state, params) -> da_i` |
 | Marginal Bellman | `MarginalBellman` | `fn_marginal_bellman` | `(c_i, params) -> dv_i` |
 
-Within `dcsn_to_arvl_mover`, the compose-and-interpolate step uses:
+Within `dcsn_to_arvl_builder`, the compose-and-interpolate step uses:
 
 | Sub-equation | `fn_*` callable | Signature |
 |-------------|-----------------|-----------|
@@ -124,19 +124,19 @@ Within `dcsn_to_arvl_mover`, the compose-and-interpolate step uses:
 
 ### Operator factory functions
 
-Factories that *build* the operators at model-setup time follow the pattern `operator_factory_{mover}` (from Matsya / bellman-dev convention):
+Factories that *build* the operators at model-setup time follow the pattern `operator_factory_{builder}` (from Matsya / bellman-dev convention):
 
 ```python
-# Build the backward mover (EGM step)
+# Build the backward builder (EGM step)
 T_cntn_to_dcsn_work = operator_factory_cntn_to_dcsn(
-    mover_spec, stage_params)
+    builder_spec, stage_params)
 
-# Build the arrival mover (compose + interp)
+# Build the arrival builder (compose + interp)
 T_dcsn_to_arvl_work = operator_factory_dcsn_to_arvl(
-    mover_spec, stage_params)
+    builder_spec, stage_params)
 ```
 
-The returned callable is the operator itself, named `T_{mover}_{stage}` for disambiguation.
+The returned callable is the operator itself, named `T_{builder}_{stage}` for disambiguation.
 
 ### Composed stage operators
 
@@ -144,9 +144,9 @@ The full stage operator is $\mathbb{T} = \mathbb{I} \circ \mathbb{B}$. In code, 
 
 | Stage | Code operator | Composition |
 |-------|--------------|-------------|
-| `work_cons` | `op_work_cons` | `mover_dcsn_to_arvl_work` $\circ$ `mover_cntn_to_dcsn_work` |
-| `retire_cons` | `op_retire_cons` | `mover_dcsn_to_arvl_ret` $\circ$ `mover_cntn_to_dcsn_ret` |
-| `labour_mkt_decision` | `op_labour_mkt` | `mover_dcsn_to_arvl_lmkt` (pure `max`, no $\mathbb{B}$) |
+| `work_cons` | `op_work_cons` | `builder_dcsn_to_arvl_work` $\circ$ `builder_cntn_to_dcsn_work` |
+| `retire_cons` | `op_retire_cons` | `builder_dcsn_to_arvl_ret` $\circ$ `builder_cntn_to_dcsn_ret` |
+| `labour_mkt_decision` | `op_labour_mkt` | `builder_dcsn_to_arvl_lmkt` (pure `max`, no $\mathbb{B}$) |
 
 When the stage operator needs to be stage-qualified (e.g. in a dict), use the stage name as key:
 
@@ -258,7 +258,7 @@ connector = {"b": "a", "b_ret": "a_ret"}
                                    │
                               x_dcsn_ref, v_dcsn_ref, c_dcsn_ref
                                    │
-                        ┌──mover_dcsn_to_arvl──┐
+                        ┌──builder_dcsn_to_arvl──┐
                         │  (compose + interp)   │
                         v                       v
                    v_arvl, c_arvl, dv_arvl, ddv_arvl

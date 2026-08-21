@@ -74,7 +74,7 @@ def solve_only(model_dir: Path, calib: dict, settings: dict):
 def main():
     run = parse_run(
         name="my_model",
-        syntax="path/to/mod/separable",
+        syntax="path/to/syntax/separable",
         methods=["FUES", "NEGM"],
         modes=["compare", "sweep", "simulate", "plots"],
         output="results/my_model",
@@ -102,7 +102,7 @@ from kikku.run import parse_run
 def main():
     run = parse_run(
         name="durables",
-        syntax="examples/durables/mod/separable",
+        syntax="examples/durables/syntax/separable",
         methods=["FUES", "NEGM"],
         modes=["compare", "sweep", "simulate"],
         output="results/durables",

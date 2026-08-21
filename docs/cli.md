@@ -138,7 +138,7 @@ Pass a dict mapping flag strings to `argparse.add_argument` keyword arguments:
 ```python
 run = parse_run(
     name="my_model",
-    syntax="mod/separable",
+    syntax="syntax/separable",
     methods=["FUES"],
     extra_args={
         "--my-flag": {"action": "store_true", "help": "Toggle feature"},

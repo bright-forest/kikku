@@ -27,7 +27,7 @@ This is the only model-specific code. It takes a dict of parameter values and re
 def trial(theta):
     """theta is {'beta': 0.95, 'alpha': 0.7, ...} -> sim_panels dict."""
     nest, grids = solve(
-        'examples/durables/mod/separable',
+        'examples/durables/syntax/separable',
         calib_overrides=theta,
         setting_overrides={'n_a': 200, 'n_h': 200},
         verbose=False,
@@ -217,19 +217,19 @@ Pass `comm=get_comm()` to `estimate()`.
 
 ```python
 from examples.durables.solve import solve
-from examples.durables.horses.simulate import simulate_lifecycle
+from examples.durables.solvers.simulate import simulate_lifecycle
 from kikku.run.moments import make_moment_fn
 from kikku.run.estimate import make_criterion, estimate, diagnostics
 from kikku.run.mpi import get_comm
 import yaml
 
-with open('examples/durables/mod/separable/estimation/baseline.yaml') as f:
+with open('examples/durables/syntax/separable/estimation/baseline.yaml') as f:
     spec = yaml.safe_load(f)
 
 moment_fn = make_moment_fn(spec['moments'])
 
 def trial(theta):
-    nest, grids = solve('examples/durables/mod/separable',
+    nest, grids = solve('examples/durables/syntax/separable',
                         calib_overrides=theta,
                         setting_overrides={'n_a': 200, 'n_h': 200, 'n_w': 200},
                         verbose=False)
@@ -276,8 +276,8 @@ identification:
 ## Utility switching
 
 ```python
-solve('examples/durables/mod/separable', ...)       # separable CRRA
-solve('examples/durables/mod/cobb_douglas', ...)    # Cobb–Douglas CRRA
+solve('examples/durables/syntax/separable', ...)       # separable CRRA
+solve('examples/durables/syntax/cobb_douglas', ...)    # Cobb–Douglas CRRA
 ```
 
 Same sim_panels format. Same moment function. Different callables dispatched automatically.

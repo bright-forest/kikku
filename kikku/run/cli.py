@@ -333,17 +333,34 @@ def _execute_merge_log(
 # ---------------------------------------------------------------------------
 
 
-def _axis_diff_label(axes: list[RangeAxis], combo: tuple) -> str:
-    """`path1=v1,path2=v2,…` from axis-kind elements only (§7.4).
+def _flatten_bundle_label(d: dict, prefix: tuple[str, ...] = ()) -> list[str]:
+    """Flatten a bundle dict into ``k1.k2=v`` fragments (leaf scalars)."""
+    parts: list[str] = []
+    for k, v in d.items():
+        if isinstance(v, dict) and v:
+            parts.extend(_flatten_bundle_label(v, (*prefix, str(k))))
+        else:
+            parts.append(f"{'.'.join((*prefix, str(k)))}={v}")
+    return parts
 
-    Zero-path axes (whole-slot replacement) contribute ``$slot=str(value)``.
+
+def _axis_diff_label(axes: list[RangeAxis], combo: tuple) -> str:
+    """`path1=v1,path2=v2,…` across all axes (§7.4).
+
+    Axis-kind elements contribute ``slot[.path]=value`` (zero-path axes,
+    i.e. whole-slot replacement, contribute ``slot=str(value)``).
+    Bundle-list elements contribute their bundle's flattened leaf paths
+    ``k1.k2=v`` — without this, rows that differ only in a bundle-list
+    dimension would share one label and be indistinguishable in sweep
+    tables.
     """
     parts: list[str] = []
     for axis, value in zip(axes, combo):
-        if axis.kind != "axis":
-            continue
-        full_path = ".".join([axis.slot or "", *(axis.path or ())])
-        parts.append(f"{full_path}={value}")
+        if axis.kind == "axis":
+            full_path = ".".join([axis.slot or "", *(axis.path or ())])
+            parts.append(f"{full_path}={value}")
+        else:
+            parts.extend(_flatten_bundle_label(value))
     return ",".join(parts)
 
 

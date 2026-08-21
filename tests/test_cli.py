@@ -500,6 +500,47 @@ def test_axis_diff_label_for_sweep(monkeypatch, base_dir):
     assert len(labels) == 4
 
 
+def test_mixed_axis_and_bundle_list_labels_distinct(monkeypatch, base_dir):
+    """Bundle-list axes contribute to row labels (§7.4).
+
+    Regression: mixing an axis-form --slot-range with a bundle-list
+    --slot-range must NOT collapse the bundle identity out of the label —
+    previously the two method rows below shared one 'draw.n_a=…' label
+    and were indistinguishable in sweep tables.
+    """
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        [
+            "--sweep",
+            "--slot-range", "$draw.n_a=[60, 80]",
+            "--slot-range", '[{"method_switch": "FUES"}, {"method_switch": "NEGM"}]',
+        ],
+    )
+    labels = [t.label for t in run.test_set]
+    assert len(labels) == 4
+    assert len(set(labels)) == 4
+    assert "draw.n_a=60,method_switch=FUES" in labels
+    assert "draw.n_a=60,method_switch=NEGM" in labels
+    assert "draw.n_a=80,method_switch=FUES" in labels
+    assert "draw.n_a=80,method_switch=NEGM" in labels
+
+
+def test_bundle_list_nested_label_flattens(monkeypatch, base_dir):
+    """Nested bundle dicts flatten to dotted leaf paths in labels."""
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        [
+            "--sweep",
+            "--slot-range",
+            '[{"draw": {"settings": {"n_a": 60}}}, {"draw": {"settings": {"n_a": 80}}}]',
+        ],
+    )
+    labels = {t.label for t in run.test_set}
+    assert labels == {"draw.settings.n_a=60", "draw.settings.n_a=80"}
+
+
 # ---------------------------------------------------------------------------
 # v4: mode classification (§5.3)
 # ---------------------------------------------------------------------------

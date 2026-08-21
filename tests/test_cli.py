@@ -1,186 +1,563 @@
-"""Tests for kikku.run.cli — parse_run and RunSpec."""
+"""Tests for v3 parse_cli, TestSpec, RunSpec, merge order (kikku-runspec-v3)."""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
 
 import pytest
 import yaml
-from pathlib import Path
 
-from kikku.run.cli import parse_run, RunSpec
+from kikku.run.cli import parse_cli
+from kikku.run.types import RunSpec, SimSpec
+
+MODES = ["compare", "sweep", "simulate", "mpi", "gpu", "plots"]
 
 
 @pytest.fixture
-def syntax_dir(tmp_path):
-    """Minimal syntax directory with calibration.yaml and settings.yaml."""
-    calib = {
-        'calibration': {
-            'beta': 0.96,
-            'r': 0.02,
-            'delta': 1.0,
-        }
-    }
-    settings = {
-        'settings': {
-            'grid_size': 3000,
-            'T': 20,
-            'plot_age': 5,
-        }
-    }
-    (tmp_path / 'calibration.yaml').write_text(yaml.dump(calib))
-    (tmp_path / 'settings.yaml').write_text(yaml.dump(settings))
+def base_dir(tmp_path) -> Path:
+    """v3: no calibration/settings reads; any directory is valid base_spec path."""
     return tmp_path
 
 
-def _run(monkeypatch, syntax_dir, argv, **kwargs):
-    """Helper: mock sys.argv and call parse_run."""
-    import sys
-    monkeypatch.setattr(sys, 'argv', ['test'] + argv)
-    defaults = dict(
-        name='test_model',
-        syntax=str(syntax_dir),
-        methods=['FUES', 'NEGM'],
-        modes=['compare', 'sweep', 'simulate'],
-        output=str(syntax_dir / 'results'),
+def _ps(monkeypatch, base: Path, argv: list, **kw):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["prologue"] + argv,
     )
-    defaults.update(kwargs)
-    return parse_run(**defaults)
+    d = {
+        "name": "m",
+        "base_spec": str(base),
+        "modes": MODES,
+        "output": str(base / "out"),
+    }
+    d.update(kw)
+    return parse_cli(**d)
 
 
-def test_parse_run_defaults(monkeypatch, syntax_dir):
-    run = _run(monkeypatch, syntax_dir, [])
+def test_single_test_default(monkeypatch, base_dir):
+    run = _ps(monkeypatch, base_dir, [])
     assert isinstance(run, RunSpec)
-    assert run.name == 'test_model'
-    assert run.method is None
-    assert run.mode == 'single'
-    assert run.compare_methods is None
-    assert run.verbose is False
-    assert run.simulate is False
-    assert run.sweep_grids is None
-    assert run.sweep_params == []
-    assert run.calib['beta'] == 0.96
-    assert run.settings['grid_size'] == 3000
-    assert run.config == {}
-    assert run.mpi is False
-    assert run.gpu is False
+    assert run.mode == "single"
+    assert len(run.test_set) == 1
+    t = run.test_set[0]
+    assert t.slots == {}
+    assert t.label == ""
+    assert run.sim is None
+    assert not hasattr(run, "params_keys")
 
 
-def test_parse_run_method_selection(monkeypatch, syntax_dir):
-    run = _run(monkeypatch, syntax_dir, ['--method', 'NEGM'])
-    assert run.method == 'NEGM'
+def test_compare_two_rows_and_labels(monkeypatch, base_dir):
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        ["--compare", "$draw.beta=0.92,0.99"],
+    )
+    assert run.mode == "compare"
+    assert len(run.test_set) == 2
+    # v4 §5.2: labels are str(value), unquoted in tables.
+    assert {run.test_set[0].label, run.test_set[1].label} == {str(0.92), str(0.99)}
+    bvals = {
+        run.test_set[0].slots["draw"]["beta"],
+        run.test_set[1].slots["draw"]["beta"],
+    }
+    assert bvals == {0.92, 0.99}
 
 
-def test_parse_run_method_overrides(monkeypatch, syntax_dir):
-    run = _run(monkeypatch, syntax_dir, [
-        '--method-override', 'adjuster_cons.cntn_to_dcsn_builder.upper_envelope=NEGM',
-        '--method-override', 'keeper_cons.upper_envelope=RFC',
-    ])
-    assert run.method_overrides == {
-        ('adjuster_cons', 'cntn_to_dcsn_builder', 'upper_envelope'): 'NEGM',
-        ('keeper_cons', 'cntn_to_dcsn_builder', 'upper_envelope'): 'RFC',
+def test_sweep_cartesian_product(monkeypatch, base_dir):
+    pl = json.dumps(
+        [
+            {"draw": {"beta": 0.9}},
+            {"draw": {"beta": 0.91}},
+        ]
+    )
+    ml = json.dumps(
+        [
+            {"ms": {"tag": "FUES"}},
+            {"ms": {"tag": "MSS"}},
+        ]
+    )
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        [
+            "--sweep",
+            f"--slot-range={pl}",
+            f"--slot-range={ml}",
+        ],
+    )
+    assert run.mode == "sweep"
+    assert len(run.test_set) == 4
+    keys = {
+        (t.slots.get("draw", {}).get("beta"), t.slots.get("ms", {}).get("tag"))
+        for t in run.test_set
+    }
+    assert len(keys) == 4
+    t0 = run.test_set[0]
+    assert t0.slots.get("ms", {}).get("tag") in ("FUES", "MSS")
+
+
+def test_merge_precedence_spec_then_override(monkeypatch, base_dir):
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        [
+            "--slot-spec",
+            '{"draw":{"beta":0.95}}',
+            "--slot-override",
+            "$draw.beta=0.97",
+        ],
+    )
+    assert run.test_set[0].slots["draw"]["beta"] == 0.97
+
+
+def test_merge_precedence_override_then_spec(monkeypatch, base_dir):
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        [
+            "--slot-override",
+            "$draw.beta=0.97",
+            "--slot-spec",
+            '{"draw":{"beta":0.95}}',
+        ],
+    )
+    assert run.test_set[0].slots["draw"]["beta"] == 0.95
+
+
+def test_dict_literal_matches_atfile(tmp_path, monkeypatch, base_dir):
+    f = tmp_path / "p.yaml"
+    f.write_text(yaml.dump({"draw": {"beta": 0.88, "r": 0.03}}))
+    a = _ps(
+        monkeypatch,
+        base_dir,
+        [f"--slot-spec=@{f}"],
+    )
+    b = _ps(
+        monkeypatch,
+        base_dir,
+        ['--slot-spec', '{"draw":{"beta":0.88,"r":0.03}}'],
+    )
+    assert a.test_set[0] == b.test_set[0]
+
+
+def test_compare_and_sweep_mutually_exclusive(monkeypatch, base_dir):
+    with pytest.raises(ValueError, match="compare and --sweep"):
+        _ps(
+            monkeypatch,
+            base_dir,
+            [
+                "--compare",
+                "$draw.a=0.9,0.91",
+                "--sweep",
+            ],
+        )
+
+
+def test_simulate_creates_simspec(monkeypatch, base_dir):
+    r = _ps(monkeypatch, base_dir, ["--simulate", "--n-sim", "5000", "--seed", "3"])
+    assert isinstance(r.sim, SimSpec)
+    assert r.sim.n_sim == 5000
+    assert r.sim.seed == 3
+
+    r2 = _ps(monkeypatch, base_dir, [])
+    assert r2.sim is None
+
+
+def test_slot_range_atfile_roundtrip(tmp_path, monkeypatch, base_dir):
+    f = tmp_path / "pr.yaml"
+    f.write_text(
+        yaml.dump(
+            [
+                {"draw": {"beta": 0.9}},
+                {"draw": {"beta": 0.91}},
+            ]
+        )
+    )
+    inline = json.dumps([{"draw": {"beta": 0.9}}, {"draw": {"beta": 0.91}}])
+    a = _ps(
+        monkeypatch,
+        base_dir,
+        [f"--slot-range=@{f}"],
+    )
+    b = _ps(
+        monkeypatch,
+        base_dir,
+        [f"--slot-range={inline}"],
+    )
+    assert a.test_set == b.test_set
+    assert a.mode == "sweep" and b.mode == "sweep"
+    assert len(a.test_set) == 2
+
+
+def test_compare_plus_slot_range_rejected(monkeypatch, base_dir):
+    with pytest.raises(ValueError, match="--compare cannot be combined"):
+        _ps(
+            monkeypatch,
+            base_dir,
+            [
+                "--compare",
+                "$draw.beta=0.9,0.91",
+                "--slot-range",
+                json.dumps([{"draw": {"r": 0.03}}]),
+            ],
+        )
+
+
+def test_slot_override_folds_into_slot_range_rows(monkeypatch, base_dir):
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        [
+            "--slot-override",
+            "$draw.r=0.03",
+            "--slot-range",
+            json.dumps([{"draw": {"beta": 0.9}}, {"draw": {"beta": 0.91}}]),
+        ],
+    )
+    assert run.mode == "sweep"
+    for t in run.test_set:
+        assert t.slots["draw"]["r"] == 0.03
+    assert {t.slots["draw"]["beta"] for t in run.test_set} == {0.9, 0.91}
+
+
+def test_invalid_slot_override_missing_dollar(monkeypatch, base_dir):
+    with pytest.raises(ValueError, match="Invalid --slot-override"):
+        _ps(
+            monkeypatch,
+            base_dir,
+            ["--slot-override", "draw.beta=1"],
+        )
+
+
+def test_slot_range_for_nested_methods_block(monkeypatch, base_dir):
+    """v3: use --slot-range (not --compare) for deep method_switch shapes."""
+    r1 = json.dumps(
+        [
+            {
+                "method_switch": {
+                    "methods": [
+                        {
+                            "on": "st",
+                            "schemes": [{"scheme": "upper_envelope", "method": "FUES"}],
+                        }
+                    ]
+                }
+            },
+            {
+                "method_switch": {
+                    "methods": [
+                        {
+                            "on": "st",
+                            "schemes": [{"scheme": "upper_envelope", "method": "NEGM"}],
+                        }
+                    ]
+                }
+            },
+        ]
+    )
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        [f"--slot-range={r1}"],
+    )
+    assert run.mode == "sweep"
+    assert len(run.test_set) == 2
+    m0 = run.test_set[0].slots["method_switch"]["methods"][0]["schemes"][0]["method"]
+    m1 = run.test_set[1].slots["method_switch"]["methods"][0]["schemes"][0]["method"]
+    assert {m0, m1} == {"FUES", "NEGM"}
+
+
+def test_recursive_at_resolution(tmp_path, monkeypatch, base_dir):
+    inner = tmp_path / "inner.yaml"
+    inner.write_text("beta: 0.5\n")
+    outer = tmp_path / "outer.yaml"
+    outer.write_text(f'draw: "@{inner}"\n')
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        [f"--slot-spec=@{outer}"],
+    )
+    assert run.test_set[0].slots["draw"] == {"beta": 0.5}
+
+
+def test_brief_import_check():
+    from kikku.run import parse_cli, sweep, TestSpec, RunSpec
+
+    assert callable(parse_cli) and callable(sweep)
+    assert TestSpec and RunSpec
+
+
+# ---------------------------------------------------------------------------
+# v4: deep-path overrides (§3)
+# ---------------------------------------------------------------------------
+
+
+def test_slot_override_one_level(monkeypatch, base_dir):
+    """v4 backward-compat: single-level path is unchanged from v3."""
+    run = _ps(monkeypatch, base_dir, ["--slot-override", "$draw.beta=0.97"])
+    assert run.test_set[0].slots == {"draw": {"beta": 0.97}}
+
+
+def test_slot_override_two_levels(monkeypatch, base_dir):
+    """`$draw.calibration.beta=v` → {draw: {calibration: {beta: v}}}."""
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        ["--slot-override", "$draw.calibration.beta=0.96"],
+    )
+    assert run.test_set[0].slots == {"draw": {"calibration": {"beta": 0.96}}}
+
+
+def test_slot_override_three_plus_levels(monkeypatch, base_dir):
+    """Unbounded depth (§3.4)."""
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        ["--slot-override", "$draw.calibration.shocks.sigma=0.02"],
+    )
+    assert run.test_set[0].slots == {
+        "draw": {"calibration": {"shocks": {"sigma": 0.02}}}
     }
 
 
-def test_parse_run_method_overrides_empty_by_default(monkeypatch, syntax_dir):
-    run = _run(monkeypatch, syntax_dir, [])
-    assert run.method_overrides == {}
-
-
-def test_parse_run_compare_mode(monkeypatch, syntax_dir):
-    run = _run(monkeypatch, syntax_dir, ['--compare', 'FUES', 'NEGM'])
-    assert run.mode == 'compare'
-    assert run.compare_methods == ('FUES', 'NEGM')
-
-
-def test_parse_run_compare_invalid_method(monkeypatch, syntax_dir):
-    with pytest.raises(SystemExit):
-        _run(monkeypatch, syntax_dir, ['--compare', 'FUES', 'INVALID'])
-
-
-def test_mutually_exclusive_modes(monkeypatch, syntax_dir):
-    with pytest.raises(SystemExit):
-        _run(monkeypatch, syntax_dir,
-             ['--compare', 'FUES', 'NEGM', '--sweep'])
-
-
-def test_tier_enforcement_calib_in_settings(monkeypatch, syntax_dir):
-    """Known calib key 'beta' via --setting-override should error."""
-    with pytest.raises(SystemExit, match='beta'):
-        _run(monkeypatch, syntax_dir,
-             ['--setting-override', 'beta=0.99'])
-
-
-def test_tier_enforcement_settings_in_calib(monkeypatch, syntax_dir):
-    """Known settings key 'grid_size' via --calib-override should error."""
-    with pytest.raises(SystemExit, match='grid_size'):
-        _run(monkeypatch, syntax_dir,
-             ['--calib-override', 'grid_size=5000'])
-
-
-def test_override_precedence(monkeypatch, syntax_dir, tmp_path):
-    """CLI beats override-file beats base YAML."""
-    override_file = tmp_path / 'overrides.yaml'
-    override_file.write_text(yaml.dump({'beta': 0.90, 'r': 0.05}))
-
-    run = _run(monkeypatch, syntax_dir, [
-        '--override-file', str(override_file),
-        '--calib-override', 'beta=0.85',
-    ])
-    assert run.calib['beta'] == 0.85
-    assert run.calib['r'] == 0.05
-
-
-def test_output_dir_creation(monkeypatch, syntax_dir):
-    run = _run(monkeypatch, syntax_dir, [])
-    assert Path(run.output_dir).exists()
-
-
-def test_modes_control_help(monkeypatch, syntax_dir):
-    """modes=['compare'] only — --sweep should not be recognized."""
-    with pytest.raises(SystemExit):
-        _run(monkeypatch, syntax_dir, ['--sweep'],
-             modes=['compare'])
-
-
-def test_extra_args(monkeypatch, syntax_dir):
-    run = _run(monkeypatch, syntax_dir,
-               ['--use-taxes'],
-               extra_args={'--use-taxes': {'action': 'store_true'}})
-    assert run.extra['use_taxes'] is True
-
-
-def test_sweep_grids_parsing(monkeypatch, syntax_dir):
-    run = _run(monkeypatch, syntax_dir,
-               ['--sweep', '--sweep-grids', '500,1000,2000'])
-    assert run.mode == 'sweep'
-    assert run.sweep_grids == [500, 1000, 2000]
-
-
-def test_sweep_params_parsing(monkeypatch, syntax_dir):
-    run = _run(
-        monkeypatch, syntax_dir,
-        ['--sweep', '--sweep-params', 'grid_size=100,200', 'beta=0.95,0.96'],
+def test_slot_override_type_collision(monkeypatch, base_dir):
+    """Argv-order, last-writer-wins (§3.3): scalar then deep path."""
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        [
+            "--slot-override", "$draw.b=42",
+            "--slot-override", "$draw.b.c=99",
+        ],
     )
-    assert run.mode == 'sweep'
-    assert run.sweep_params == ['grid_size=100,200', 'beta=0.95,0.96']
+    assert run.test_set[0].slots == {"draw": {"b": {"c": 99}}}
 
 
-def test_runspec_frozen(monkeypatch, syntax_dir):
-    run = _run(monkeypatch, syntax_dir, [])
-    with pytest.raises(AttributeError):
-        run.method = 'NEGM'
+def test_slot_override_multiple_levels_share_prefix(monkeypatch, base_dir):
+    """Two deep overrides under the same prefix merge (no overwrite)."""
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        [
+            "--slot-override", "$draw.calibration.beta=0.96",
+            "--slot-override", "$draw.calibration.tau=0.05",
+            "--slot-override", "$draw.settings.n_a=500",
+        ],
+    )
+    assert run.test_set[0].slots == {
+        "draw": {
+            "calibration": {"beta": 0.96, "tau": 0.05},
+            "settings": {"n_a": 500},
+        }
+    }
 
 
-def test_config_override_warning(monkeypatch, syntax_dir):
-    """--config-override with a known calib key should warn."""
-    import warnings
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter('always')
-        run = _run(monkeypatch, syntax_dir,
-                    ['--config-override', 'beta=0.99'])
-        calib_warnings = [x for x in w if 'beta' in str(x.message)]
-        assert len(calib_warnings) >= 1
+# ---------------------------------------------------------------------------
+# v4: axis-form ranges (§4)
+# ---------------------------------------------------------------------------
 
 
-def test_setting_override_merges(monkeypatch, syntax_dir):
-    run = _run(monkeypatch, syntax_dir,
-               ['--setting-override', 'grid_size=5000'])
-    assert run.settings['grid_size'] == 5000
-    assert run.settings['T'] == 20
+def test_slot_range_axis_form_scalars(monkeypatch, base_dir):
+    """`$path=[1,2,3]` → 3 rows, each setting the path."""
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        ["--sweep", "--slot-range", "$draw.calibration.tau=[0.05, 0.10, 0.15]"],
+    )
+    assert run.mode == "sweep"
+    assert len(run.test_set) == 3
+    taus = [t.slots["draw"]["calibration"]["tau"] for t in run.test_set]
+    assert taus == [0.05, 0.10, 0.15]
+
+
+def test_slot_range_axis_form_dicts(monkeypatch, base_dir):
+    """Axis values can be dicts (e.g. method-block payloads)."""
+    payload = (
+        '$method_switch=['
+        '{"methods":[{"on":"m","schemes":[{"scheme":"upper_envelope","method":"FUES"}]}]},'
+        '{"methods":[{"on":"m","schemes":[{"scheme":"upper_envelope","method":"NEGM"}]}]}'
+        "]"
+    )
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        ["--sweep", f"--slot-range={payload}"],
+    )
+    assert len(run.test_set) == 2
+    methods = {
+        t.slots["method_switch"]["methods"][0]["schemes"][0]["method"]
+        for t in run.test_set
+    }
+    assert methods == {"FUES", "NEGM"}
+
+
+def test_slot_range_two_axes_cartesian(monkeypatch, base_dir):
+    """Two `--slot-range` flags → Cartesian (2 × 3 = 6 rows)."""
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        [
+            "--sweep",
+            "--slot-range", "$draw.calibration.tau=[0.05, 0.10]",
+            "--slot-range", "$draw.settings.n_a=[100, 200, 300]",
+        ],
+    )
+    assert len(run.test_set) == 6
+    pairs = {
+        (t.slots["draw"]["calibration"]["tau"], t.slots["draw"]["settings"]["n_a"])
+        for t in run.test_set
+    }
+    assert pairs == {
+        (0.05, 100), (0.05, 200), (0.05, 300),
+        (0.10, 100), (0.10, 200), (0.10, 300),
+    }
+
+
+def test_slot_range_axis_plus_bundle_list(monkeypatch, base_dir):
+    """Axis form × bundle-list form → Cartesian (2 × 2 = 4)."""
+    bundle = json.dumps([{"draw": {"r": 0.02}}, {"draw": {"r": 0.04}}])
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        [
+            "--sweep",
+            "--slot-range", "$draw.beta=[0.96, 0.99]",
+            "--slot-range", bundle,
+        ],
+    )
+    assert len(run.test_set) == 4
+    pairs = {
+        (t.slots["draw"]["beta"], t.slots["draw"]["r"])
+        for t in run.test_set
+    }
+    assert pairs == {(0.96, 0.02), (0.96, 0.04), (0.99, 0.02), (0.99, 0.04)}
+
+
+def test_slot_range_axis_form_atfile(tmp_path, monkeypatch, base_dir):
+    """Spec §4.5: `$path=@file.yaml` reads the file as a YAML list."""
+    f = tmp_path / "betas.yaml"
+    f.write_text("- 0.92\n- 0.94\n- 0.96\n")
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        ["--sweep", f"--slot-range=$draw.calibration.beta=@{f}"],
+    )
+    betas = [t.slots["draw"]["calibration"]["beta"] for t in run.test_set]
+    assert betas == [0.92, 0.94, 0.96]
+
+
+# ---------------------------------------------------------------------------
+# v4: label derivation (§5.2, §7.4)
+# ---------------------------------------------------------------------------
+
+
+def test_compare_str_label_unquoted(monkeypatch, base_dir):
+    """`--compare` row labels are str(value), unquoted in tables (§5.2)."""
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        ["--compare", "$method_switch.tag=FUES,NEGM"],
+    )
+    labels = {t.label for t in run.test_set}
+    # str() of a YAML-loaded scalar; "FUES" is not Python repr "'FUES'".
+    assert labels == {"FUES", "NEGM"}
+    assert all(not lbl.startswith("'") for lbl in labels)
+
+
+def test_compare_deep_path_two_levels(monkeypatch, base_dir):
+    """v4 `--compare` allows deep paths just like `--slot-override` (§5.1)."""
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        ["--compare", "$draw.calibration.beta=0.92,0.96"],
+    )
+    assert run.mode == "compare"
+    assert len(run.test_set) == 2
+    betas = {
+        t.slots["draw"]["calibration"]["beta"] for t in run.test_set
+    }
+    assert betas == {0.92, 0.96}
+
+
+def test_axis_diff_label_for_sweep(monkeypatch, base_dir):
+    """Non-compare sweep label is `slot.path=value,…` per §7.4."""
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        [
+            "--sweep",
+            "--slot-range", "$draw.calibration.tau=[0.05, 0.10]",
+            "--slot-range", "$draw.settings.n_a=[100, 200]",
+        ],
+    )
+    labels = {t.label for t in run.test_set}
+    # Expected: "draw.calibration.tau=0.05,draw.settings.n_a=100", etc.
+    assert "draw.calibration.tau=0.05,draw.settings.n_a=100" in labels
+    assert "draw.calibration.tau=0.1,draw.settings.n_a=200" in labels
+    assert len(labels) == 4
+
+
+def test_mixed_axis_and_bundle_list_labels_distinct(monkeypatch, base_dir):
+    """Bundle-list axes contribute to row labels (§7.4).
+
+    Regression: mixing an axis-form --slot-range with a bundle-list
+    --slot-range must NOT collapse the bundle identity out of the label —
+    previously the two method rows below shared one 'draw.n_a=…' label
+    and were indistinguishable in sweep tables.
+    """
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        [
+            "--sweep",
+            "--slot-range", "$draw.n_a=[60, 80]",
+            "--slot-range", '[{"method_switch": "FUES"}, {"method_switch": "NEGM"}]',
+        ],
+    )
+    labels = [t.label for t in run.test_set]
+    assert len(labels) == 4
+    assert len(set(labels)) == 4
+    assert "draw.n_a=60,method_switch=FUES" in labels
+    assert "draw.n_a=60,method_switch=NEGM" in labels
+    assert "draw.n_a=80,method_switch=FUES" in labels
+    assert "draw.n_a=80,method_switch=NEGM" in labels
+
+
+def test_bundle_list_nested_label_flattens(monkeypatch, base_dir):
+    """Nested bundle dicts flatten to dotted leaf paths in labels."""
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        [
+            "--sweep",
+            "--slot-range",
+            '[{"draw": {"settings": {"n_a": 60}}}, {"draw": {"settings": {"n_a": 80}}}]',
+        ],
+    )
+    labels = {t.label for t in run.test_set}
+    assert labels == {"draw.settings.n_a=60", "draw.settings.n_a=80"}
+
+
+# ---------------------------------------------------------------------------
+# v4: mode classification (§5.3)
+# ---------------------------------------------------------------------------
+
+
+def test_sweep_without_slot_range_rejected(monkeypatch, base_dir):
+    """Bare --sweep is now an error (§5.3 refines v3)."""
+    with pytest.raises(ValueError, match="--sweep requires"):
+        _ps(monkeypatch, base_dir, ["--sweep"])
+
+
+def test_slot_range_without_sweep_implicit_mode(monkeypatch, base_dir):
+    """`--slot-range` without `--sweep` → mode='sweep' implicitly (§5.3)."""
+    run = _ps(
+        monkeypatch,
+        base_dir,
+        ["--slot-range", "$draw.beta=[0.92, 0.96]"],
+    )
+    assert run.mode == "sweep"
+    assert len(run.test_set) == 2
